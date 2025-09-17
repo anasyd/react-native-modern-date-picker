@@ -1,0 +1,26 @@
+{
+  "name": "bare-modern-date-picker-example",
+  "private": true,
+  "version": "0.0.1",
+  "main": "index.js",
+  "scripts": {
+    "start": "react-native start",
+    "android": "react-native run-android",
+    "ios": "react-native run-ios --scheme bare_example",
+    "clean": "rimraf node_modules && rimraf android/app/build && rimraf ios/build"
+  },
+  "dependencies": {
+    "@react-native-community/blur": "^4.5.0",
+    "react": "19.1.0",
+    "react-native": "0.81.4",
+    "react-native-modern-date-picker": "^1.0.0"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.25.0",
+    "@babel/runtime": "^7.25.0",
+    "@react-native/metro-config": "^0.76.9",
+    "metro-react-native-babel-preset": "^0.77.0",
+    "react-native-codegen": "^0.73.3",
+    "rimraf": "^6.0.1"
+  }
+}
