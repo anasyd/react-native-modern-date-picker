@@ -1,6 +1,6 @@
 {
   "name": "@anasyd/react-native-modern-date-picker",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "description": "A modern, customizable date picker for React Native & Expo (optional blur via expo-blur or @react-native-community/blur)",
   "repository": {
     "type": "git",

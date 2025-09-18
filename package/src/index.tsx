@@ -1,4 +1,25 @@
-import React, { useEffect, useRef, useState } from "react";
+// ModernDatePicker.tsx — fully refactored with industry-standard theming
+// React Native + TypeScript (drop into your project). No external deps.
+//
+// Highlights
+// - Semantic color tokens (background, surface, foreground, accent, onAccent, ...)
+// - Light/Dark presets
+// - createTheme({ preset, palette, overrides }) factory
+// - ThemeProvider + useTheme() context
+// - Component reads only semantic tokens
+// - WCAG-ish auto-contrast for onAccent & foreground
+// - Back-compat: you can still pass a legacy `theme` with {primary, secondary} and it will be adapted
+//
+// Usage
+// const theme = createTheme({
+//   preset: "light",
+//   palette: { primary: "#f4f2f2", secondary: "#000", accent: "#2563eb" },
+// });
+// <ThemeProvider value={theme}>
+//   <ModernDatePicker open={open} onClose={close} />
+// </ThemeProvider>
+
+import React, { useEffect, useMemo, useRef, useState, useContext } from "react";
 import {
   Animated,
   Easing,
@@ -15,20 +36,60 @@ import {
   FlatList,
 } from "react-native";
 
+/*************************
+ * THEME TYPES & HELPERS *
+ *************************/
+
+export type SemanticColors = {
+  background: string; // main sheet bg
+  surface: string; // card/body surfaces
+  header: string; // header surface
+  foreground: string; // primary text color on surfaces
+  mutedForeground: string; // subdued text
+  border: string; // borders (focus rings can derive from accent)
+  divider: string; // hairlines
+  accent: string; // selection bg / emphasis
+  onAccent: string; // text on top of accent
+  disabledForeground: string; // disabled text
+};
+
 export type Theme = {
-  colors?: {
-    background?: string;
-    surface?: string;
-    headerBackgroundColor?: string;
-    bodyBackgroundColor?: string;
-    text?: string;
-    mutedText?: string;
-    selectedBackground?: string;
-    selectedText?: string;
-    todayBorder?: string;
-    disabledText?: string;
-    divider?: string;
-  };
+  colorScheme: "light" | "dark";
+  colors: SemanticColors;
+  radii: { xs: number; sm: number; md: number; lg: number; full: number };
+  space: { xs: number; sm: number; md: number; lg: number };
+  fontSizes: { xs: number; sm: number; md: number; lg: number };
+  shadows: ViewStyle;
+};
+
+export type ThemePalette = {
+  primary?: string; // surfaces
+  secondary?: string; // text/icons
+  accent?: string; // selection
+};
+
+export type CreateThemeInput = {
+  preset?: "light" | "dark";
+  palette?: ThemePalette;
+  overrides?: Partial<Theme> & { colors?: Partial<SemanticColors> };
+  options?: { contrastThreshold?: number; autoContrast?: boolean };
+};
+
+// LEGACY support (from your original API)
+export type LegacyTheme = {
+  colors?: Partial<{
+    background: string;
+    surface: string;
+    headerBackgroundColor: string;
+    bodyBackgroundColor: string;
+    text: string;
+    mutedText: string;
+    selectedBackground: string;
+    selectedText: string;
+    todayBorder: string;
+    disabledText: string;
+    divider: string;
+  }>;
   radius?: number;
   topRadius?: number;
   selectedDateRadius?: number;
@@ -37,112 +98,18 @@ export type Theme = {
   preset?: "dark" | "light";
   primary?: string;
   secondary?: string;
-  // theming behavior toggles
-  selectionFlip?: boolean; // default true when both primary & secondary present
-  autoContrast?: boolean; // improve legibility for text vs backgrounds
-  contrastThreshold?: number; // default 4.5
+  autoContrast?: boolean;
+  contrastThreshold?: number;
   shadow?: boolean;
   typography?: { title?: number; label?: number; day?: number };
   spacing?: { gutter?: number; header?: number; gridGap?: number };
 };
 
-export type ModernDatePickerProps = {
-  open: boolean;
-  onClose: () => void;
-  value?: Date | null;
-  defaultValue?: Date;
-  onChange?: (date: Date) => void;
-  minDate?: Date;
-  maxDate?: Date;
-  ageLimitYears?: number;
-  theme?: Theme;
-  locale?: string;
-  firstDayOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
-  testID?: string;
-  style?: StyleProp<ViewStyle>;
-  animationSpeed?: number;
-  renderBackdrop?: (opacity: Animated.Value) => React.ReactNode;
-  showDefaultBackdrop?: boolean;
-  backdropColor?: string;
-};
+/***********************
+ * CONTRAST UTILITIES   *
+ ***********************/
 
-const DEFAULT_THEME: Theme = {
-  colors: {
-    background: "#0f1115",
-    surface: "#171923",
-    headerBackgroundColor: "#171923",
-    bodyBackgroundColor: "#171923",
-    text: "#e5e7eb",
-    mutedText: "#9ca3af",
-    selectedBackground: "#2563eb",
-    selectedText: "#ffffff",
-    todayBorder: "#2563eb",
-    disabledText: "#6b7280",
-    divider: "#232735",
-  },
-  shadow: true,
-  topRadius: 20,
-  selectedMonthRadius: 8,
-  selectedYearRadius: 8,
-  typography: { title: 18, label: 13, day: 15 },
-  spacing: { gutter: 16, header: 12, gridGap: 6 },
-};
-
-const BW_COLORS = {
-  background: "#000000",
-  surface: "#000000",
-  headerBackgroundColor: "#000000",
-  bodyBackgroundColor: "#000000",
-  text: "#FFFFFF",
-  mutedText: "#CCCCCC",
-  selectedBackground: "#FFFFFF",
-  selectedText: "#000000",
-  todayBorder: "#FFFFFF",
-  disabledText: "#777777",
-  divider: "#444444",
-} as Required<NonNullable<Theme["colors"]>>;
-
-const LIGHT_COLORS = {
-  background: "#FFFFFF",
-  surface: "#FFFFFF",
-  headerBackgroundColor: "#FFFFFF",
-  bodyBackgroundColor: "#FFFFFF",
-  text: "#111827",
-  mutedText: "#6B7280",
-  selectedBackground: "#111827",
-  selectedText: "#FFFFFF",
-  todayBorder: "#111827",
-  disabledText: "#9CA3AF",
-  divider: "#E5E7EB",
-} as Required<NonNullable<Theme["colors"]>>;
-
-export const DefaultThemes = {
-  dark: BW_COLORS,
-  light: LIGHT_COLORS,
-};
-
-const DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
-
-// Utility: apply opacity to a hex color (#RGB, #RRGGBB) producing rgba string.
-function colorWithOpacity(hex: string, alpha: number) {
-  if (!hex) return hex;
-  let h = hex.replace(/^#/, "");
-  if (h.length === 3) {
-    h = h
-      .split("")
-      .map((c) => c + c)
-      .join("");
-  }
-  if (h.length !== 6) return hex;
-  const num = parseInt(h, 16);
-  const r = (num >> 16) & 255;
-  const g = (num >> 8) & 255;
-  const b = num & 255;
-  return `rgba(${r},${g},${b},${alpha})`;
-}
-
-// Parse hex (#RGB/#RRGGBB) to {r,g,b}
-function parseHex(hex?: string): { r: number; g: number; b: number } | null {
+function hexToRgb(hex?: string): { r: number; g: number; b: number } | null {
   if (!hex) return null;
   let h = hex.replace(/^#/, "").trim();
   if (h.length === 3)
@@ -155,50 +122,236 @@ function parseHex(hex?: string): { r: number; g: number; b: number } | null {
   return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
 }
 
-function relativeLuminance(rgb: { r: number; g: number; b: number }) {
+function relLuminance({ r, g, b }: { r: number; g: number; b: number }) {
   const chan = (c: number) => {
     const v = c / 255;
     return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
   };
-  return 0.2126 * chan(rgb.r) + 0.7152 * chan(rgb.g) + 0.0722 * chan(rgb.b);
+  return 0.2126 * chan(r) + 0.7152 * chan(g) + 0.0722 * chan(b);
 }
 
 function contrastRatio(fg: string, bg: string): number {
-  const pFg = parseHex(fg);
-  const pBg = parseHex(bg);
-  if (!pFg || !pBg) return 1;
-  const l1 = relativeLuminance(pFg) + 0.05;
-  const l2 = relativeLuminance(pBg) + 0.05;
+  const a = hexToRgb(fg);
+  const b = hexToRgb(bg);
+  if (!a || !b) return 1;
+  const l1 = relLuminance(a) + 0.05;
+  const l2 = relLuminance(b) + 0.05;
   return l1 > l2 ? l1 / l2 : l2 / l1;
 }
 
-function bestTextColor(bg: string, preferred?: string, threshold = 4.5) {
-  const candidates = [preferred, "#FFFFFF", "#000000"].filter(
-    Boolean
-  ) as string[];
+function ensureReadable(desiredText: string, bg: string, threshold = 4.5) {
+  const candidates = [desiredText, "#ffffff", "#000000"]; // try intent first
   let best = candidates[0];
   let bestRatio = 0;
-  candidates.forEach((c) => {
-    const ratio = contrastRatio(c, bg);
-    if (ratio > bestRatio) {
-      bestRatio = ratio;
+  for (const c of candidates) {
+    const r = contrastRatio(c, bg);
+    if (r > bestRatio) {
+      bestRatio = r;
       best = c;
     }
-  });
-  if (bestRatio < threshold) {
-    // enforce highest contrast between white/black
-    const whiteRatio = contrastRatio("#FFFFFF", bg);
-    const blackRatio = contrastRatio("#000000", bg);
-    return whiteRatio >= blackRatio ? "#FFFFFF" : "#000000";
   }
-  return best;
+  if (bestRatio >= threshold) return best;
+  // force the highest contrast between black/white
+  return contrastRatio("#fff", bg) >= contrastRatio("#000", bg)
+    ? "#fff"
+    : "#000";
 }
 
-function ensureReadable(fg: string, bg: string, threshold = 4.5) {
-  return contrastRatio(fg, bg) >= threshold
-    ? fg
-    : bestTextColor(bg, fg, threshold);
+function withAlpha(hex: string, alpha: number) {
+  const rgb = hexToRgb(hex);
+  if (!rgb) return hex;
+  return `rgba(${rgb.r},${rgb.g},${rgb.b},${alpha})`;
 }
+
+/*********************
+ * PRESETS & FACTORY *
+ *********************/
+
+const LIGHT: SemanticColors = {
+  background: "#ffffff",
+  surface: "#ffffff",
+  header: "#ffffff",
+  foreground: "#111827",
+  mutedForeground: "#6B7280",
+  border: "#e5e7eb",
+  divider: "#e5e7eb",
+  accent: "#2563eb",
+  onAccent: "#ffffff",
+  disabledForeground: "#9CA3AF",
+};
+
+const DARK: SemanticColors = {
+  background: "#0f1115",
+  surface: "#171923",
+  header: "#171923",
+  foreground: "#e5e7eb",
+  mutedForeground: "#9ca3af",
+  border: "#232735",
+  divider: "#232735",
+  accent: "#2563eb",
+  onAccent: "#ffffff",
+  disabledForeground: "#6b7280",
+};
+
+const DEFAULT_THEME: Theme = {
+  colorScheme: "dark",
+  colors: DARK,
+  radii: { xs: 6, sm: 8, md: 12, lg: 20, full: 9999 },
+  space: { xs: 6, sm: 12, md: 16, lg: 20 },
+  fontSizes: { xs: 12, sm: 13, md: 15, lg: 18 },
+  shadows: Platform.select({
+    ios: {
+      shadowColor: "#000",
+      shadowOpacity: 0.3,
+      shadowRadius: 12,
+      shadowOffset: { width: 0, height: -4 },
+    },
+    android: { elevation: 18 },
+    default: {},
+  }) as ViewStyle,
+};
+
+export function createTheme(input: CreateThemeInput = {}): Theme {
+  const { preset = "dark", palette = {}, overrides = {}, options = {} } = input;
+
+  const baseScheme = preset === "light" ? LIGHT : DARK;
+  const primary = palette.primary ?? baseScheme.background; // surfaces
+  const secondary = palette.secondary ?? baseScheme.foreground; // text
+  const accent = palette.accent ?? baseScheme.accent; // selection
+
+  const threshold = options.contrastThreshold ?? 4.5;
+  const autoContrast = options.autoContrast ?? true;
+
+  // Resolve foreground against the actual surface the calendar uses (surface)
+  const foreground = ensureReadable(secondary, primary, threshold);
+
+  const resolved: Theme = {
+    colorScheme: preset,
+    colors: {
+      background: primary,
+      surface: primary,
+      header: primary,
+      foreground,
+      mutedForeground: withAlpha(foreground, 0.7),
+      border: withAlpha(foreground, 0.15),
+      divider: withAlpha(foreground, 0.15),
+      accent,
+      onAccent: autoContrast
+        ? ensureReadable(foreground, accent, threshold)
+        : foreground,
+      disabledForeground: withAlpha(foreground, 0.4),
+    },
+    radii: { ...DEFAULT_THEME.radii },
+    space: { ...DEFAULT_THEME.space },
+    fontSizes: { ...DEFAULT_THEME.fontSizes },
+    shadows: { ...DEFAULT_THEME.shadows },
+  };
+
+  // Apply overrides (shallow for root, deep for colors)
+  const out: Theme = {
+    ...resolved,
+    ...(overrides as any),
+    colors: { ...resolved.colors, ...(overrides.colors ?? {}) },
+  };
+
+  return out;
+}
+
+export function extendTheme(
+  base: Theme,
+  overrides: Partial<Theme> & { colors?: Partial<SemanticColors> }
+): Theme {
+  return {
+    ...base,
+    ...overrides,
+    colors: { ...base.colors, ...(overrides.colors ?? {}) },
+  };
+}
+
+/**********************
+ * THEME CONTEXT API  *
+ **********************/
+
+const ThemeCtx = React.createContext<Theme>(DEFAULT_THEME);
+export const ThemeProvider: React.FC<{
+  value: Theme;
+  children: React.ReactNode;
+}> = ({ value, children }) => (
+  <ThemeCtx.Provider value={value}>{children}</ThemeCtx.Provider>
+);
+export function useTheme(): Theme {
+  return useContext(ThemeCtx);
+}
+
+/************************
+ * LEGACY THEME ADAPTER *
+ ************************/
+
+function adaptLegacyTheme(legacy?: LegacyTheme): Theme | null {
+  if (!legacy) return null;
+  const preset = legacy.preset === "light" ? "light" : "dark";
+  const base = preset === "light" ? LIGHT : DARK;
+  const primary = legacy.primary ?? base.background;
+  const secondary = legacy.secondary ?? base.foreground;
+  const threshold = legacy.contrastThreshold ?? 4.5;
+  const autoContrast = legacy.autoContrast ?? true;
+
+  // Choose the surface where content lives (prefer bodyBackgroundColor if provided)
+  const bodySurface = legacy.colors?.bodyBackgroundColor ?? primary;
+  const foreground =
+    legacy.colors?.text ?? ensureReadable(secondary, bodySurface, threshold);
+
+  const colors: SemanticColors = {
+    background: legacy.colors?.background ?? primary,
+    surface: legacy.colors?.surface ?? bodySurface,
+    header: legacy.colors?.headerBackgroundColor ?? primary,
+    foreground,
+    mutedForeground: legacy.colors?.mutedText ?? withAlpha(foreground, 0.7),
+    border: legacy.colors?.divider ?? withAlpha(foreground, 0.15),
+    divider: legacy.colors?.divider ?? withAlpha(foreground, 0.15),
+    accent: legacy.colors?.selectedBackground ?? base.accent,
+    onAccent:
+      legacy.colors?.selectedText ??
+      (autoContrast
+        ? ensureReadable(
+            foreground,
+            legacy.colors?.selectedBackground ?? base.accent,
+            threshold
+          )
+        : foreground),
+    disabledForeground:
+      legacy.colors?.disabledText ?? withAlpha(foreground, 0.4),
+  };
+
+  const adapted: Theme = {
+    colorScheme: preset,
+    colors,
+    radii: {
+      xs: 6,
+      sm: 8,
+      md: legacy.selectedDateRadius ?? legacy.radius ?? 12,
+      lg: legacy.topRadius ?? legacy.radius ?? 20,
+      full: 9999,
+    },
+    space: { xs: 6, sm: 12, md: legacy.spacing?.gutter ?? 16, lg: 20 },
+    fontSizes: {
+      xs: 12,
+      sm: legacy.typography?.label ?? 13,
+      md: legacy.typography?.day ?? 15,
+      lg: legacy.typography?.title ?? 18,
+    },
+    shadows:
+      legacy.shadow === false
+        ? ({} as ViewStyle)
+        : (DEFAULT_THEME.shadows as ViewStyle),
+  };
+
+  return adapted;
+}
+
+/**********************
+ * DATE UTILITIES     *
+ **********************/
 
 function stripTime(d: Date): Date {
   const x = new Date(d);
@@ -250,14 +403,45 @@ function getMonthMatrix(year: number, month: number, firstDayOfWeek: number) {
     cells.push({ date: new Date(year, month, d), inMonth: true });
   while (cells.length % 7 !== 0) {
     const last = cells[cells.length - 1].date;
-    const d = new Date(last);
-    d.setDate(d.getDate() + 1);
-    cells.push({ date: d, inMonth: false });
+    const nd = new Date(last);
+    nd.setDate(nd.getDate() + 1);
+    cells.push({ date: nd, inMonth: false });
   }
   const matrix: { date: Date; inMonth: boolean }[][] = [];
   for (let r = 0; r < cells.length; r += 7) matrix.push(cells.slice(r, r + 7));
   return matrix;
 }
+
+/**********************
+ * COMPONENT PROPS    *
+ **********************/
+
+export type ModernDatePickerProps = {
+  open: boolean;
+  onClose: () => void;
+  value?: Date | null;
+  defaultValue?: Date;
+  onChange?: (date: Date) => void;
+  minDate?: Date;
+  maxDate?: Date;
+  ageLimitYears?: number;
+  // Theming: you can pass a resolved Theme, or a CreateThemeInput, or a LegacyTheme
+  theme?: Theme | CreateThemeInput | LegacyTheme;
+  locale?: string;
+  firstDayOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
+  testID?: string;
+  style?: StyleProp<ViewStyle>;
+  animationSpeed?: number;
+  renderBackdrop?: (opacity: Animated.Value) => React.ReactNode;
+  showDefaultBackdrop?: boolean;
+  backdropColor?: string;
+};
+
+/**********************
+ * MAIN COMPONENT     *
+ **********************/
+
+const DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
 
 const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   open,
@@ -278,135 +462,62 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   showDefaultBackdrop = true,
   backdropColor = "#000",
 }) => {
-  const THEME = React.useMemo(() => {
-    // Track which color keys the user explicitly provided so we don't overwrite them
-    const userColorKeys = new Set(Object.keys((theme && theme.colors) || {}));
-    const basePalette = theme?.preset
-      ? theme.preset === "light"
-        ? LIGHT_COLORS
-        : BW_COLORS
-      : theme?.colors
-      ? undefined
-      : BW_COLORS;
-    const base: Theme = basePalette
-      ? { ...DEFAULT_THEME, colors: basePalette }
-      : DEFAULT_THEME;
-    const merged = deepMerge(base as any, theme || {}) as Theme;
-    const selectionFlip =
-      merged.selectionFlip !== undefined
-        ? merged.selectionFlip
-        : merged.primary != null && merged.secondary != null;
-    const autoContrast = merged.autoContrast !== false; // default true
-    const threshold = merged.contrastThreshold || 4.5;
-    if (merged.primary && merged.secondary) {
-      merged.colors = merged.colors || {};
-      const { primary, secondary } = merged as any;
-      const c = merged.colors;
-      // Assign core surfaces to primary unless user explicitly provided those keys
-      [
-        "background",
-        "surface",
-        "headerBackgroundColor",
-        "bodyBackgroundColor",
-      ].forEach((k) => {
-        if (!userColorKeys.has(k)) (c as any)[k] = primary;
-      });
-      // Base text
-      c.text = c.text || ensureReadable(secondary, c.background!, threshold);
-      c.mutedText =
-        c.mutedText ||
-        colorWithOpacity(
-          ensureReadable(secondary, c.background!, threshold),
-          0.7
-        );
-      c.divider = c.divider || colorWithOpacity(secondary, 0.15);
-      if (selectionFlip) {
-        c.selectedBackground = ensureReadable(secondary, primary, 1); // keep raw secondary
-        c.selectedText = autoContrast
-          ? ensureReadable(primary, c.selectedBackground || primary, threshold)
-          : primary;
-      } else {
-        // Solid selection: primary background, secondary text
-        c.selectedBackground = primary;
-        c.selectedText = autoContrast
-          ? ensureReadable(
-              secondary,
-              c.selectedBackground || primary || c.background || "#000",
-              threshold
-            )
-          : secondary;
-      }
-      c.todayBorder = c.todayBorder || c.selectedText || secondary;
-      c.disabledText =
-        c.disabledText || colorWithOpacity(c.text || secondary, 0.35);
-    } else if (merged.primary && !merged.secondary) {
-      merged.colors = merged.colors || {};
-      const c = merged.colors;
-      // Keep existing
-      c.selectedBackground = c.selectedBackground || merged.primary;
-      c.todayBorder = c.todayBorder || merged.primary;
-      if (autoContrast) {
-        c.text = ensureReadable(
-          c.text || "#FFFFFF",
-          c.background || merged.primary!,
-          threshold
-        );
-        c.disabledText = c.disabledText || colorWithOpacity(c.text, 0.4);
-      }
-    } else if (merged.secondary && !merged.primary) {
-      merged.colors = merged.colors || {};
-      const c = merged.colors;
-      c.text = c.text || merged.secondary;
-      if (autoContrast) {
-        c.text = ensureReadable(
-          c.text,
-          c.background || DEFAULT_THEME.colors!.background!,
-          threshold
-        );
-      }
-      c.todayBorder = c.todayBorder || c.text;
-      c.disabledText = c.disabledText || colorWithOpacity(c.text, 0.4);
+  // Resolve THEME: prefer context, then adapt/create from prop, else default
+  const ctx = useTheme();
+  const THEME: Theme = useMemo(() => {
+    if (!theme) return ctx || DEFAULT_THEME;
+
+    // If it's already a Theme (has colors.foreground and colorScheme), trust it
+    const maybeTheme = theme as Theme;
+    if (
+      (maybeTheme as any)?.colors?.foreground &&
+      (maybeTheme as any)?.colorScheme
+    ) {
+      return extendTheme(ctx, maybeTheme);
     }
-    if (merged.radius != null) {
-      merged.topRadius = merged.topRadius ?? merged.radius;
-      merged.selectedDateRadius =
-        merged.selectedDateRadius !== undefined
-          ? merged.selectedDateRadius
-          : merged.radius;
-      merged.selectedMonthRadius = merged.selectedMonthRadius ?? merged.radius;
-      merged.selectedYearRadius = merged.selectedYearRadius ?? merged.radius;
+
+    // If it looks like CreateThemeInput
+    if (
+      (theme as any)?.palette ||
+      (theme as any)?.overrides ||
+      (theme as any)?.preset
+    ) {
+      const created = createTheme(theme as CreateThemeInput);
+      return extendTheme(ctx, created);
     }
-    return merged as any;
-  }, [theme]);
-  const today = React.useMemo(() => stripTime(new Date()), []);
-  const effectiveMax = React.useMemo(() => {
+
+    // Else adapt legacy
+    const adapted = adaptLegacyTheme(theme as LegacyTheme);
+    return adapted ? extendTheme(ctx, adapted) : ctx;
+  }, [theme, ctx]);
+
+  const today = useMemo(() => stripTime(new Date()), []);
+
+  const effectiveMax = useMemo(() => {
     const ageMax =
       ageLimitYears != null
         ? stripTime(addYears(new Date(), -ageLimitYears))
         : undefined;
     if (maxDate && ageMax)
-      return new Date(min(stripTime(maxDate).getTime(), ageMax.getTime()));
+      return new Date(Math.min(stripTime(maxDate).getTime(), ageMax.getTime()));
     return maxDate || ageMax
       ? stripTime((maxDate || ageMax) as Date)
       : undefined;
-    function min(a: number, b: number) {
-      return a < b ? a : b;
-    }
   }, [maxDate, ageLimitYears]);
-  const effectiveMin = React.useMemo(
+
+  const effectiveMin = useMemo(
     () => (minDate ? stripTime(minDate) : undefined),
     [minDate]
   );
 
-  const initialSelected = React.useMemo(() => {
+  const initialSelected = useMemo(() => {
     const base = value ?? defaultValue ?? (effectiveMax ? effectiveMax : today);
     return clampDate(stripTime(base), effectiveMin, effectiveMax);
   }, [value, defaultValue, effectiveMax, effectiveMin, today]);
 
   const [selected, setSelected] = useState<Date>(initialSelected);
-  useEffect(() => {
-    setSelected(initialSelected);
-  }, [open]);
+  useEffect(() => setSelected(initialSelected), [open]);
+
   const [cursor, setCursor] = useState<Date>(
     new Date(initialSelected.getFullYear(), initialSelected.getMonth(), 1)
   );
@@ -416,6 +527,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
         new Date(initialSelected.getFullYear(), initialSelected.getMonth(), 1)
       );
   }, [open]);
+
   type ViewMode = "days" | "months" | "years";
   const [mode, setMode] = useState<ViewMode>("days");
 
@@ -423,6 +535,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   const opacity = useRef(new Animated.Value(0)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const [mounted, setMounted] = useState<boolean>(open);
+
   useEffect(() => {
     if (open) {
       if (!mounted) setMounted(true);
@@ -468,23 +581,31 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
     }
   }, [open, animationSpeed]);
 
-  const monthNames = React.useMemo(() => {
+  const monthNames = useMemo(() => {
     const fmt = new Intl.DateTimeFormat(locale || undefined, { month: "long" });
     return Array.from({ length: 12 }, (_, m) =>
       fmt.format(new Date(2020, m, 1))
     );
   }, [locale]);
-  const weekdayShort = React.useMemo(() => {
+
+  const weekdayShort = useMemo(() => {
     const fmt = new Intl.DateTimeFormat(locale || undefined, {
       weekday: "short",
     });
     return DAYS.map((d) => fmt.format(new Date(2020, 10, d + 1)));
   }, [locale]);
-  const orderedWeekdays = React.useMemo(() => {
+
+  const orderedWeekdays = useMemo(() => {
     const arr = weekdayShort.slice();
     for (let i = 0; i < firstDayOfWeek; i++) arr.push(arr.shift()!);
     return arr;
   }, [weekdayShort, firstDayOfWeek]);
+
+  const matrix = useMemo(
+    () =>
+      getMonthMatrix(cursor.getFullYear(), cursor.getMonth(), firstDayOfWeek),
+    [cursor, firstDayOfWeek]
+  );
 
   const handleSelect = (d: Date) => {
     if (!between(d, effectiveMin, effectiveMax)) return;
@@ -492,16 +613,22 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
     onChange?.(d);
     onClose();
   };
-  const goPrev = () => {
-    if (mode === "days") setCursor(addMonths(cursor, -1));
-    else if (mode === "months") setCursor(addYears(cursor, -1));
-    else setCursor(addYears(cursor, -12));
-  };
-  const goNext = () => {
-    if (mode === "days") setCursor(addMonths(cursor, 1));
-    else if (mode === "months") setCursor(addYears(cursor, 1));
-    else setCursor(addYears(cursor, 12));
-  };
+  const goPrev = () =>
+    setCursor(
+      mode === "days"
+        ? addMonths(cursor, -1)
+        : mode === "months"
+        ? addYears(cursor, -1)
+        : addYears(cursor, -12)
+    );
+  const goNext = () =>
+    setCursor(
+      mode === "days"
+        ? addMonths(cursor, 1)
+        : mode === "months"
+        ? addYears(cursor, 1)
+        : addYears(cursor, 12)
+    );
 
   const renderHeader = () => {
     const year = cursor.getFullYear();
@@ -512,9 +639,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
         style={[
           styles.header,
           {
-            paddingHorizontal: THEME.spacing.gutter,
-            paddingTop: THEME.spacing.header,
-            backgroundColor: THEME.colors.headerBackgroundColor,
+            paddingHorizontal: THEME.space.md,
+            paddingTop: THEME.space.sm,
+            backgroundColor: THEME.colors.header,
           },
         ]}
       >
@@ -527,8 +654,8 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             style={[
               styles.yearText,
               {
-                color: THEME.colors.mutedText,
-                fontSize: THEME.typography.label,
+                color: THEME.colors.mutedForeground,
+                fontSize: THEME.fontSizes.sm,
               },
             ]}
           >
@@ -541,7 +668,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             accessibilityRole="button"
             accessibilityLabel="Previous"
           >
-            <Text style={[styles.chev, { color: THEME.colors.text }]}>‹</Text>
+            <Text style={[styles.chev, { color: THEME.colors.foreground }]}>
+              ‹
+            </Text>
           </TouchableOpacity>
           <TouchableOpacity
             onPress={() => setMode(mode === "days" ? "months" : "days")}
@@ -552,7 +681,10 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             <Text
               style={[
                 styles.monthText,
-                { color: THEME.colors.text, fontSize: THEME.typography.title },
+                {
+                  color: THEME.colors.foreground,
+                  fontSize: THEME.fontSizes.lg,
+                },
               ]}
             >
               {monthLabel}
@@ -563,84 +695,64 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             accessibilityRole="button"
             accessibilityLabel="Next"
           >
-            <Text style={[styles.chev, { color: THEME.colors.text }]}>›</Text>
+            <Text style={[styles.chev, { color: THEME.colors.foreground }]}>
+              ›
+            </Text>
           </TouchableOpacity>
         </View>
       </View>
     );
   };
 
-  const matrix = React.useMemo(
-    () =>
-      getMonthMatrix(cursor.getFullYear(), cursor.getMonth(), firstDayOfWeek),
-    [cursor, firstDayOfWeek]
-  );
-
   const renderDays = () => (
     <View
       style={{
-        paddingHorizontal: THEME.spacing.gutter,
-        paddingBottom: THEME.spacing.gutter,
+        paddingHorizontal: THEME.space.md,
+        paddingBottom: THEME.space.md,
       }}
     >
       <View style={styles.weekRow}>
         {orderedWeekdays.map((w: string, i: number) => (
           <Text
             key={i}
-            style={[styles.weekLabel, { color: THEME.colors.mutedText }]}
+            style={[styles.weekLabel, { color: THEME.colors.mutedForeground }]}
           >
             {w}
           </Text>
         ))}
       </View>
-      {matrix.map((row: { date: Date; inMonth: boolean }[], r: number) => (
+      {matrix.map((row, r) => (
         <View key={r} style={styles.weekRow}>
-          {row.map((cell: { date: Date; inMonth: boolean }, c: number) => {
+          {row.map((cell, c) => {
             const disabled =
               !between(cell.date, effectiveMin, effectiveMax) || !cell.inMonth;
-            const selected = isSameDay(cell.date, initialSelected as Date);
+            const isCurrent = isSameDay(cell.date, selected as Date);
             const isToday = isSameDay(cell.date, today);
-            const selectedRadius = THEME.selectedDateRadius;
-            const computedRadius = selected
-              ? selectedRadius === undefined
-                ? 9999
-                : selectedRadius
-              : 8;
             const dayStyles: ViewStyle = {
-              borderRadius: computedRadius,
-              borderWidth: isToday && !selected ? 1 : 0,
-              borderColor: THEME.colors.todayBorder,
-              backgroundColor: selected
-                ? THEME.colors.selectedBackground
-                : "transparent",
-            } as any;
+              borderRadius: THEME.radii.full,
+              borderWidth: isToday && !isCurrent ? 1 : 0,
+              borderColor: THEME.colors.accent,
+              backgroundColor: isCurrent ? THEME.colors.accent : "transparent",
+            };
             const txtStyles: TextStyle = {
-              color: selected
-                ? THEME.colors.selectedText
+              color: isCurrent
+                ? THEME.colors.onAccent
                 : disabled
-                ? THEME.colors.disabledText
-                : THEME.colors.text,
+                ? THEME.colors.disabledForeground
+                : THEME.colors.foreground,
+              fontSize: THEME.fontSizes.md,
             };
             return (
               <TouchableOpacity
                 key={c}
-                style={[
-                  styles.dayCell,
-                  { paddingVertical: THEME.spacing.gridGap / 1.5 },
-                ]}
+                style={[styles.dayCell, { paddingVertical: 3 }]}
                 disabled={disabled}
                 onPress={() => handleSelect(stripTime(cell.date))}
                 accessibilityRole="button"
                 accessibilityLabel={`Select ${cell.date.toDateString()}`}
               >
                 <View style={[styles.dayPill, dayStyles]}>
-                  <Text
-                    style={[
-                      styles.dayText,
-                      txtStyles,
-                      { fontSize: THEME.typography.day },
-                    ]}
-                  >
+                  <Text style={[styles.dayText, txtStyles]}>
                     {cell.date.getDate()}
                   </Text>
                 </View>
@@ -660,12 +772,12 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
     return (
       <View
         style={{
-          paddingHorizontal: THEME.spacing.gutter,
-          paddingBottom: THEME.spacing.gutter,
+          paddingHorizontal: THEME.space.md,
+          paddingBottom: THEME.space.md,
         }}
       >
         <View style={styles.monthGrid}>
-          {months.map((m: { name: string; idx: number }) => {
+          {months.map((m) => {
             const base = new Date(cursor.getFullYear(), m.idx, 1);
             const daysInMonth = new Date(
               base.getFullYear(),
@@ -674,16 +786,15 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             ).getDate();
             const selectable = Array.from(
               { length: daysInMonth },
-              (_: unknown, i: number) =>
-                new Date(base.getFullYear(), base.getMonth(), i + 1)
-            ).some((d: Date) => between(d, effectiveMin, effectiveMax));
+              (_, i) => new Date(base.getFullYear(), base.getMonth(), i + 1)
+            ).some((d) => between(d, effectiveMin, effectiveMax));
             const isCurrent =
-              m.idx === (initialSelected as Date).getMonth() &&
-              cursor.getFullYear() === (initialSelected as Date).getFullYear();
+              m.idx === (selected as Date).getMonth() &&
+              cursor.getFullYear() === (selected as Date).getFullYear();
             return (
               <TouchableOpacity
                 key={m.idx}
-                style={[styles.monthCell, { borderRadius: 8 }]}
+                style={[styles.monthCell, { borderRadius: THEME.radii.sm }]}
                 disabled={!selectable}
                 onPress={() => {
                   setCursor(new Date(cursor.getFullYear(), m.idx, 1));
@@ -697,19 +808,17 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
                     styles.monthChip,
                     {
                       backgroundColor: isCurrent
-                        ? THEME.colors.selectedBackground
+                        ? THEME.colors.accent
                         : THEME.colors.surface,
-                      borderRadius: isCurrent
-                        ? THEME.selectedMonthRadius ?? 8
-                        : 8,
+                      borderRadius: isCurrent ? THEME.radii.md : THEME.radii.sm,
                     },
                   ]}
                 >
                   <Text
                     style={{
                       color: isCurrent
-                        ? THEME.colors.selectedText
-                        : THEME.colors.text,
+                        ? THEME.colors.onAccent
+                        : THEME.colors.foreground,
                     }}
                   >
                     {m.name}
@@ -731,7 +840,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       const inRange =
         between(new Date(y, 0, 1), effectiveMin, effectiveMax) ||
         between(new Date(y, 11, 31), effectiveMin, effectiveMax);
-      const isCurrent = y === (initialSelected as Date).getFullYear();
+      const isCurrent = y === (selected as Date).getFullYear();
       return (
         <TouchableOpacity
           disabled={!inRange}
@@ -742,10 +851,8 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           style={[
             styles.yearRow,
             {
-              backgroundColor: isCurrent
-                ? THEME.colors.selectedBackground
-                : "transparent",
-              borderRadius: isCurrent ? THEME.selectedYearRadius ?? 8 : 8,
+              backgroundColor: isCurrent ? THEME.colors.accent : "transparent",
+              borderRadius: THEME.radii.sm,
             },
           ]}
           accessibilityRole="button"
@@ -754,11 +861,11 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           <Text
             style={{
               color: isCurrent
-                ? THEME.colors.selectedText
+                ? THEME.colors.onAccent
                 : inRange
-                ? THEME.colors.text
-                : THEME.colors.disabledText,
-              fontSize: THEME.typography.day,
+                ? THEME.colors.foreground
+                : THEME.colors.disabledForeground,
+              fontSize: THEME.fontSizes.md,
             }}
           >
             {y}
@@ -772,7 +879,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           data={years}
           keyExtractor={(y: number) => String(y)}
           initialScrollIndex={120}
-          getItemLayout={(_: unknown, index: number) => ({
+          getItemLayout={(_, index: number) => ({
             length: 44,
             offset: 44 * index,
             index,
@@ -785,6 +892,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   };
 
   if (!mounted) return null;
+
   return (
     <Modal
       transparent
@@ -805,38 +913,34 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           />
         ) : null}
       </Pressable>
+
       <Animated.View
         style={[
           styles.sheet,
           {
             transform: [{ translateY }],
             backgroundColor: THEME.colors.background,
-            borderTopLeftRadius: THEME.topRadius ?? 20,
-            borderTopRightRadius: THEME.topRadius ?? 20,
+            borderTopLeftRadius: 20,
+            borderTopRightRadius: 20,
             overflow: "hidden",
-            ...(THEME.shadow ? shadowStyle : {}),
+            ...(THEME.shadows as object),
+            opacity,
           },
           style,
-          { opacity },
         ]}
       >
         {renderHeader()}
         <View
           style={[styles.divider, { backgroundColor: THEME.colors.divider }]}
         />
-        <View
-          style={{
-            backgroundColor: THEME.colors.bodyBackgroundColor,
-            height: 360,
-          }}
-        >
+        <View style={{ backgroundColor: THEME.colors.surface, height: 360 }}>
           {mode === "days" && renderDays()}
           {mode === "months" && renderMonths()}
           {mode === "years" && (
             <View
               style={{
-                paddingHorizontal: THEME.spacing.gutter,
-                paddingBottom: THEME.spacing.gutter,
+                paddingHorizontal: THEME.space.md,
+                paddingBottom: THEME.space.md,
                 flex: 1,
               }}
             >
@@ -849,30 +953,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   );
 };
 
-function deepMerge<T>(base: T, patch: Partial<T>): T {
-  if (!patch) return base as T;
-  const out: any = Array.isArray(base)
-    ? [...(base as any)]
-    : { ...(base as any) };
-  for (const k in patch) {
-    const v: any = (patch as any)[k];
-    if (v && typeof v === "object" && !Array.isArray(v))
-      out[k] = deepMerge((out as any)[k] ?? {}, v);
-    else if (v !== undefined) out[k] = v;
-  }
-  return out as T;
-}
-
-const shadowStyle: ViewStyle = Platform.select({
-  ios: {
-    shadowColor: "#000",
-    shadowOpacity: 0.3,
-    shadowRadius: 12,
-    shadowOffset: { width: 0, height: -4 },
-  },
-  android: { elevation: 18 },
-  default: {},
-}) as unknown as ViewStyle;
+/**********************
+ * STYLES             *
+ **********************/
 
 const styles = StyleSheet.create({
   backdrop: { position: "absolute", top: 0, bottom: 0, left: 0, right: 0 },
