@@ -1,18 +1,10 @@
 {
-  "name": "react-native-modern-date-picker-monorepo",
+  "name": "react-native-modern-date-picker-repo",
   "private": true,
-  "workspaces": [
-    "packages/*",
-    "expo_example",
-    "bare_example"
-  ],
   "scripts": {
-    "build": "npm run build -w packages/expo && npm run build -w packages/bare",
-    "pack": "npm pack -w packages/expo && npm pack -w packages/bare",
-    "publish:expo": "npm publish -w packages/expo --access public",
-    "publish:bare": "npm publish -w packages/bare --access public",
-    "publish": "npm run build && npm run pack && npm run publish:expo && npm run publish:bare",
-    "start:expo": "npm run start -w expo_example",
-    "start:bare": "npm run start -w bare_example"
+    "build": "cd package && npm run build",
+    "pack": "cd package && npm pack",
+    "publish": "cd package && npm publish --access public",
+    "start:example": "cd example && npm install && npm run start"
   }
 }

@@ -1,5 +1,5 @@
 {
-  "name": "modern-date-picker-example",
+  "name": "react-native-modern-date-picker-example",
   "version": "0.0.1",
   "private": true,
   "main": "index.js",
@@ -10,10 +10,16 @@
     "web": "expo start --web"
   },
   "dependencies": {
+    "@anasyd/react-native-modern-date-picker": "file:../package/anasyd-react-native-modern-date-picker-1.1.0.tgz",
     "expo": "~54.0.0",
     "expo-blur": "^15.0.7",
-    "expo-modern-date-picker": "^1.0.0",
     "react": "19.1.0",
     "react-native": "0.81.4"
+  },
+  "devDependencies": {
+    "@babel/core": "^7.28.4",
+    "@babel/preset-env": "^7.28.3",
+    "@types/react": "~19.1.10",
+    "typescript": "~5.9.2"
   }
 }

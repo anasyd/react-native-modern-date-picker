@@ -14,7 +14,6 @@ import {
   ViewStyle,
   FlatList,
 } from "react-native";
-import { BlurView } from "./BlurView";
 
 export type Theme = {
   colors?: {
@@ -38,6 +37,10 @@ export type Theme = {
   preset?: "dark" | "light";
   primary?: string;
   secondary?: string;
+  // theming behavior toggles
+  selectionFlip?: boolean; // default true when both primary & secondary present
+  autoContrast?: boolean; // improve legibility for text vs backgrounds
+  contrastThreshold?: number; // default 4.5
   shadow?: boolean;
   typography?: { title?: number; label?: number; day?: number };
   spacing?: { gutter?: number; header?: number; gridGap?: number };
@@ -57,8 +60,10 @@ export type ModernDatePickerProps = {
   firstDayOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   testID?: string;
   style?: StyleProp<ViewStyle>;
-  blurAmount?: number;
   animationSpeed?: number;
+  renderBackdrop?: (opacity: Animated.Value) => React.ReactNode;
+  showDefaultBackdrop?: boolean;
+  backdropColor?: string;
 };
 
 const DEFAULT_THEME: Theme = {
@@ -117,6 +122,83 @@ export const DefaultThemes = {
 };
 
 const DAYS = [0, 1, 2, 3, 4, 5, 6] as const;
+
+// Utility: apply opacity to a hex color (#RGB, #RRGGBB) producing rgba string.
+function colorWithOpacity(hex: string, alpha: number) {
+  if (!hex) return hex;
+  let h = hex.replace(/^#/, "");
+  if (h.length === 3) {
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  }
+  if (h.length !== 6) return hex;
+  const num = parseInt(h, 16);
+  const r = (num >> 16) & 255;
+  const g = (num >> 8) & 255;
+  const b = num & 255;
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+// Parse hex (#RGB/#RRGGBB) to {r,g,b}
+function parseHex(hex?: string): { r: number; g: number; b: number } | null {
+  if (!hex) return null;
+  let h = hex.replace(/^#/, "").trim();
+  if (h.length === 3)
+    h = h
+      .split("")
+      .map((c) => c + c)
+      .join("");
+  if (h.length !== 6) return null;
+  const int = parseInt(h, 16);
+  return { r: (int >> 16) & 255, g: (int >> 8) & 255, b: int & 255 };
+}
+
+function relativeLuminance(rgb: { r: number; g: number; b: number }) {
+  const chan = (c: number) => {
+    const v = c / 255;
+    return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+  };
+  return 0.2126 * chan(rgb.r) + 0.7152 * chan(rgb.g) + 0.0722 * chan(rgb.b);
+}
+
+function contrastRatio(fg: string, bg: string): number {
+  const pFg = parseHex(fg);
+  const pBg = parseHex(bg);
+  if (!pFg || !pBg) return 1;
+  const l1 = relativeLuminance(pFg) + 0.05;
+  const l2 = relativeLuminance(pBg) + 0.05;
+  return l1 > l2 ? l1 / l2 : l2 / l1;
+}
+
+function bestTextColor(bg: string, preferred?: string, threshold = 4.5) {
+  const candidates = [preferred, "#FFFFFF", "#000000"].filter(
+    Boolean
+  ) as string[];
+  let best = candidates[0];
+  let bestRatio = 0;
+  candidates.forEach((c) => {
+    const ratio = contrastRatio(c, bg);
+    if (ratio > bestRatio) {
+      bestRatio = ratio;
+      best = c;
+    }
+  });
+  if (bestRatio < threshold) {
+    // enforce highest contrast between white/black
+    const whiteRatio = contrastRatio("#FFFFFF", bg);
+    const blackRatio = contrastRatio("#000000", bg);
+    return whiteRatio >= blackRatio ? "#FFFFFF" : "#000000";
+  }
+  return best;
+}
+
+function ensureReadable(fg: string, bg: string, threshold = 4.5) {
+  return contrastRatio(fg, bg) >= threshold
+    ? fg
+    : bestTextColor(bg, fg, threshold);
+}
 
 function stripTime(d: Date): Date {
   const x = new Date(d);
@@ -191,11 +273,14 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   firstDayOfWeek = 0,
   testID,
   style,
-  blurAmount = 5,
   animationSpeed = 220,
+  renderBackdrop,
+  showDefaultBackdrop = true,
+  backdropColor = "#000",
 }) => {
-  const BODY_HEIGHT = 360;
   const THEME = React.useMemo(() => {
+    // Track which color keys the user explicitly provided so we don't overwrite them
+    const userColorKeys = new Set(Object.keys((theme && theme.colors) || {}));
     const basePalette = theme?.preset
       ? theme.preset === "light"
         ? LIGHT_COLORS
@@ -207,15 +292,80 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       ? { ...DEFAULT_THEME, colors: basePalette }
       : DEFAULT_THEME;
     const merged = deepMerge(base as any, theme || {}) as Theme;
-    if (merged.primary) {
+    const selectionFlip =
+      merged.selectionFlip !== undefined
+        ? merged.selectionFlip
+        : merged.primary != null && merged.secondary != null;
+    const autoContrast = merged.autoContrast !== false; // default true
+    const threshold = merged.contrastThreshold || 4.5;
+    if (merged.primary && merged.secondary) {
       merged.colors = merged.colors || {};
-      merged.colors.selectedBackground = merged.primary;
-      merged.colors.todayBorder = merged.primary;
-    }
-    if (merged.secondary) {
+      const { primary, secondary } = merged as any;
+      const c = merged.colors;
+      // Assign core surfaces to primary unless user explicitly provided those keys
+      [
+        "background",
+        "surface",
+        "headerBackgroundColor",
+        "bodyBackgroundColor",
+      ].forEach((k) => {
+        if (!userColorKeys.has(k)) (c as any)[k] = primary;
+      });
+      // Base text
+      c.text = c.text || ensureReadable(secondary, c.background!, threshold);
+      c.mutedText =
+        c.mutedText ||
+        colorWithOpacity(
+          ensureReadable(secondary, c.background!, threshold),
+          0.7
+        );
+      c.divider = c.divider || colorWithOpacity(secondary, 0.15);
+      if (selectionFlip) {
+        c.selectedBackground = ensureReadable(secondary, primary, 1); // keep raw secondary
+        c.selectedText = autoContrast
+          ? ensureReadable(primary, c.selectedBackground || primary, threshold)
+          : primary;
+      } else {
+        // Solid selection: primary background, secondary text
+        c.selectedBackground = primary;
+        c.selectedText = autoContrast
+          ? ensureReadable(
+              secondary,
+              c.selectedBackground || primary || c.background || "#000",
+              threshold
+            )
+          : secondary;
+      }
+      c.todayBorder = c.todayBorder || c.selectedText || secondary;
+      c.disabledText =
+        c.disabledText || colorWithOpacity(c.text || secondary, 0.35);
+    } else if (merged.primary && !merged.secondary) {
       merged.colors = merged.colors || {};
-      merged.colors.headerBackgroundColor = merged.secondary;
-      merged.colors.surface = merged.secondary;
+      const c = merged.colors;
+      // Keep existing
+      c.selectedBackground = c.selectedBackground || merged.primary;
+      c.todayBorder = c.todayBorder || merged.primary;
+      if (autoContrast) {
+        c.text = ensureReadable(
+          c.text || "#FFFFFF",
+          c.background || merged.primary!,
+          threshold
+        );
+        c.disabledText = c.disabledText || colorWithOpacity(c.text, 0.4);
+      }
+    } else if (merged.secondary && !merged.primary) {
+      merged.colors = merged.colors || {};
+      const c = merged.colors;
+      c.text = c.text || merged.secondary;
+      if (autoContrast) {
+        c.text = ensureReadable(
+          c.text,
+          c.background || DEFAULT_THEME.colors!.background!,
+          threshold
+        );
+      }
+      c.todayBorder = c.todayBorder || c.text;
+      c.disabledText = c.disabledText || colorWithOpacity(c.text, 0.4);
     }
     if (merged.radius != null) {
       merged.topRadius = merged.topRadius ?? merged.radius;
@@ -271,7 +421,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
   const translateY = useRef(new Animated.Value(300)).current;
   const opacity = useRef(new Animated.Value(0)).current;
-  const blurOpacity = useRef(new Animated.Value(0)).current;
+  const backdropOpacity = useRef(new Animated.Value(0)).current;
   const [mounted, setMounted] = useState<boolean>(open);
   useEffect(() => {
     if (open) {
@@ -283,14 +433,13 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           useNativeDriver: true,
           easing: Easing.out(Easing.exp),
         }),
-        Animated.spring(translateY, {
+        Animated.timing(translateY, {
           toValue: 0,
+          duration: animationSpeed,
+          easing: Easing.out(Easing.exp),
           useNativeDriver: true,
-          damping: 18,
-          stiffness: 220,
-          mass: 0.7,
         }),
-        Animated.timing(blurOpacity, {
+        Animated.timing(backdropOpacity, {
           toValue: 1,
           duration: animationSpeed,
           useNativeDriver: true,
@@ -310,7 +459,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           useNativeDriver: true,
           easing: Easing.in(Easing.exp),
         }),
-        Animated.timing(blurOpacity, {
+        Animated.timing(backdropOpacity, {
           toValue: 0,
           duration: Math.max(120, animationSpeed * 0.8),
           useNativeDriver: true,
@@ -645,16 +794,16 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       testID={testID}
     >
       <Pressable style={styles.backdrop} onPress={onClose}>
-        <Animated.View
-          style={[StyleSheet.absoluteFill, { opacity: blurOpacity }]}
-        >
-          <BlurView
-            blurAmount={blurAmount}
-            blurType={"dark"}
-            style={StyleSheet.absoluteFill}
-            reducedTransparencyFallbackColor="black"
+        {renderBackdrop ? (
+          renderBackdrop(backdropOpacity)
+        ) : showDefaultBackdrop ? (
+          <Animated.View
+            style={[
+              StyleSheet.absoluteFill,
+              { backgroundColor: backdropColor, opacity: backdropOpacity },
+            ]}
           />
-        </Animated.View>
+        ) : null}
       </Pressable>
       <Animated.View
         style={[
