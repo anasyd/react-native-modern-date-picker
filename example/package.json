@@ -10,7 +10,7 @@
     "web": "expo start --web"
   },
   "dependencies": {
-    "@anasyd/react-native-modern-date-picker": "1.1.1",
+    "@anasyd/react-native-modern-date-picker": "file:../package/anasyd-react-native-modern-date-picker-1.1.1.tgz",
     "expo": "~54.0.0",
     "expo-blur": "^15.0.7",
     "react": "19.1.0",

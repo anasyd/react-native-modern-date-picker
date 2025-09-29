@@ -34,6 +34,7 @@ import {
   View,
   ViewStyle,
   FlatList,
+  Vibration,
 } from "react-native";
 
 /*************************
@@ -75,35 +76,6 @@ export type CreateThemeInput = {
   options?: { contrastThreshold?: number; autoContrast?: boolean };
 };
 
-// LEGACY support (from your original API)
-export type LegacyTheme = {
-  colors?: Partial<{
-    background: string;
-    surface: string;
-    headerBackgroundColor: string;
-    bodyBackgroundColor: string;
-    text: string;
-    mutedText: string;
-    selectedBackground: string;
-    selectedText: string;
-    todayBorder: string;
-    disabledText: string;
-    divider: string;
-  }>;
-  radius?: number;
-  topRadius?: number;
-  selectedDateRadius?: number;
-  selectedMonthRadius?: number;
-  selectedYearRadius?: number;
-  preset?: "dark" | "light";
-  primary?: string;
-  secondary?: string;
-  autoContrast?: boolean;
-  contrastThreshold?: number;
-  shadow?: boolean;
-  typography?: { title?: number; label?: number; day?: number };
-  spacing?: { gutter?: number; header?: number; gridGap?: number };
-};
 
 /***********************
  * CONTRAST UTILITIES   *
@@ -283,71 +255,6 @@ export function useTheme(): Theme {
   return useContext(ThemeCtx);
 }
 
-/************************
- * LEGACY THEME ADAPTER *
- ************************/
-
-function adaptLegacyTheme(legacy?: LegacyTheme): Theme | null {
-  if (!legacy) return null;
-  const preset = legacy.preset === "light" ? "light" : "dark";
-  const base = preset === "light" ? LIGHT : DARK;
-  const primary = legacy.primary ?? base.background;
-  const secondary = legacy.secondary ?? base.foreground;
-  const threshold = legacy.contrastThreshold ?? 4.5;
-  const autoContrast = legacy.autoContrast ?? true;
-
-  // Choose the surface where content lives (prefer bodyBackgroundColor if provided)
-  const bodySurface = legacy.colors?.bodyBackgroundColor ?? primary;
-  const foreground =
-    legacy.colors?.text ?? ensureReadable(secondary, bodySurface, threshold);
-
-  const colors: SemanticColors = {
-    background: legacy.colors?.background ?? primary,
-    surface: legacy.colors?.surface ?? bodySurface,
-    header: legacy.colors?.headerBackgroundColor ?? primary,
-    foreground,
-    mutedForeground: legacy.colors?.mutedText ?? withAlpha(foreground, 0.7),
-    border: legacy.colors?.divider ?? withAlpha(foreground, 0.15),
-    divider: legacy.colors?.divider ?? withAlpha(foreground, 0.15),
-    accent: legacy.colors?.selectedBackground ?? base.accent,
-    onAccent:
-      legacy.colors?.selectedText ??
-      (autoContrast
-        ? ensureReadable(
-            foreground,
-            legacy.colors?.selectedBackground ?? base.accent,
-            threshold
-          )
-        : foreground),
-    disabledForeground:
-      legacy.colors?.disabledText ?? withAlpha(foreground, 0.4),
-  };
-
-  const adapted: Theme = {
-    colorScheme: preset,
-    colors,
-    radii: {
-      xs: 6,
-      sm: 8,
-      md: legacy.selectedDateRadius ?? legacy.radius ?? 12,
-      lg: legacy.topRadius ?? legacy.radius ?? 20,
-      full: 9999,
-    },
-    space: { xs: 6, sm: 12, md: legacy.spacing?.gutter ?? 16, lg: 20 },
-    fontSizes: {
-      xs: 12,
-      sm: legacy.typography?.label ?? 13,
-      md: legacy.typography?.day ?? 15,
-      lg: legacy.typography?.title ?? 18,
-    },
-    shadows:
-      legacy.shadow === false
-        ? ({} as ViewStyle)
-        : (DEFAULT_THEME.shadows as ViewStyle),
-  };
-
-  return adapted;
-}
 
 /**********************
  * DATE UTILITIES     *
@@ -422,11 +329,20 @@ export type ModernDatePickerProps = {
   value?: Date | null;
   defaultValue?: Date;
   onChange?: (date: Date) => void;
+  // Date constraints
   minDate?: Date;
   maxDate?: Date;
-  ageLimitYears?: number;
-  // Theming: you can pass a resolved Theme, or a CreateThemeInput, or a LegacyTheme
-  theme?: Theme | CreateThemeInput | LegacyTheme;
+  minAge?: number; // Minimum age in years (e.g., 18 for adults only)
+  maxAge?: number; // Maximum age in years (e.g., 100)
+  // Time constraints
+  minTime?: { hour: number; minute: number }; // Minimum time (e.g., { hour: 9, minute: 0 })
+  maxTime?: { hour: number; minute: number }; // Maximum time (e.g., { hour: 17, minute: 30 })
+  // Picker mode
+  mode?: "date" | "time" | "datetime";
+  is24Hour?: boolean;
+  minuteInterval?: 1 | 2 | 3 | 4 | 5 | 6 | 10 | 12 | 15 | 20 | 30;
+  // Theming: you can pass a resolved Theme or a CreateThemeInput
+  theme?: Theme | CreateThemeInput;
   locale?: string;
   firstDayOfWeek?: 0 | 1 | 2 | 3 | 4 | 5 | 6;
   testID?: string;
@@ -451,7 +367,13 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   onChange,
   minDate,
   maxDate,
-  ageLimitYears,
+  minAge,
+  maxAge,
+  minTime,
+  maxTime,
+  mode = "date",
+  is24Hour = true,
+  minuteInterval = 1,
   theme,
   locale = Platform.OS === "ios" ? undefined : "en-US",
   firstDayOfWeek = 0,
@@ -462,7 +384,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   showDefaultBackdrop = true,
   backdropColor = "#000",
 }) => {
-  // Resolve THEME: prefer context, then adapt/create from prop, else default
+  // Resolve THEME: prefer context, then create from prop, else default
   const ctx = useTheme();
   const THEME: Theme = useMemo(() => {
     if (!theme) return ctx || DEFAULT_THEME;
@@ -476,39 +398,38 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       return extendTheme(ctx, maybeTheme);
     }
 
-    // If it looks like CreateThemeInput
-    if (
-      (theme as any)?.palette ||
-      (theme as any)?.overrides ||
-      (theme as any)?.preset
-    ) {
-      const created = createTheme(theme as CreateThemeInput);
-      return extendTheme(ctx, created);
-    }
-
-    // Else adapt legacy
-    const adapted = adaptLegacyTheme(theme as LegacyTheme);
-    return adapted ? extendTheme(ctx, adapted) : ctx;
+    // Otherwise treat as CreateThemeInput
+    const created = createTheme(theme as CreateThemeInput);
+    return extendTheme(ctx, created);
   }, [theme, ctx]);
 
   const today = useMemo(() => stripTime(new Date()), []);
 
   const effectiveMax = useMemo(() => {
-    const ageMax =
-      ageLimitYears != null
-        ? stripTime(addYears(new Date(), -ageLimitYears))
+    // minAge = minimum age required (e.g., 18 means must be at least 18 years old)
+    // This translates to: birth date must be at most 18 years ago (maxDate for picker)
+    const ageBasedMax =
+      minAge != null
+        ? stripTime(addYears(new Date(), -minAge))
         : undefined;
-    if (maxDate && ageMax)
-      return new Date(Math.min(stripTime(maxDate).getTime(), ageMax.getTime()));
-    return maxDate || ageMax
-      ? stripTime((maxDate || ageMax) as Date)
+    if (maxDate && ageBasedMax)
+      return new Date(Math.min(stripTime(maxDate).getTime(), ageBasedMax.getTime()));
+    return maxDate || ageBasedMax
+      ? stripTime((maxDate || ageBasedMax) as Date)
       : undefined;
-  }, [maxDate, ageLimitYears]);
+  }, [maxDate, minAge]);
 
-  const effectiveMin = useMemo(
-    () => (minDate ? stripTime(minDate) : undefined),
-    [minDate]
-  );
+  const effectiveMin = useMemo(() => {
+    // maxAge = maximum age allowed (e.g., 65 means person can't be older than 65)
+    // This translates to: birth date must be at least 65 years ago (minDate for picker)
+    const ageBasedMin =
+      maxAge != null ? stripTime(addYears(new Date(), -maxAge)) : undefined;
+    if (minDate && ageBasedMin)
+      return new Date(Math.max(stripTime(minDate).getTime(), ageBasedMin.getTime()));
+    return minDate || ageBasedMin
+      ? stripTime((minDate || ageBasedMin) as Date)
+      : undefined;
+  }, [minDate, maxAge]);
 
   const initialSelected = useMemo(() => {
     const base = value ?? defaultValue ?? (effectiveMax ? effectiveMax : today);
@@ -528,13 +449,104 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       );
   }, [open]);
 
-  type ViewMode = "days" | "months" | "years";
-  const [mode, setMode] = useState<ViewMode>("days");
+  type ViewMode = "days" | "months" | "years" | "time";
+  const [viewMode, setViewMode] = useState<ViewMode>(
+    mode === "time" ? "time" : "days"
+  );
+
+  // Time state
+  const [selectedHour, setSelectedHour] = useState<number>(
+    initialSelected.getHours()
+  );
+  const [selectedMinute, setSelectedMinute] = useState<number>(
+    initialSelected.getMinutes()
+  );
+
+  // Track last haptic values to prevent spam
+  const lastHapticHourRef = useRef<number>(initialSelected.getHours());
+  const lastHapticMinuteRef = useRef<number>(initialSelected.getMinutes());
+
+  // Track if user is actively scrolling to prevent state updates during scroll
+  const isScrollingRef = useRef<boolean>(false);
+  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
 
   const translateY = useRef(new Animated.Value(300)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
   const [mounted, setMounted] = useState<boolean>(open);
+
+  // Refs for scroll components - moved to top level to avoid hooks rule violation
+  const yearListRef = useRef<FlatList>(null);
+  const hourScrollRef = useRef<FlatList>(null);
+  const minuteScrollRef = useRef<FlatList>(null);
+  const ampmScrollRef = useRef<FlatList>(null);
+
+  // Improved haptic feedback utility - subtle iOS-style feedback
+  const triggerHaptic = (intensity: "light" | "medium" | "heavy" = "light") => {
+    try {
+      if (Platform.OS === "ios") {
+        // Try to use Expo haptics first (preferred)
+        try {
+          const { Haptics } = require("expo-haptics");
+          const feedbackStyle =
+            intensity === "light"
+              ? Haptics.ImpactFeedbackStyle.Light
+              : intensity === "medium"
+              ? Haptics.ImpactFeedbackStyle.Medium
+              : Haptics.ImpactFeedbackStyle.Heavy;
+          Haptics.impactAsync(feedbackStyle);
+          return;
+        } catch {
+          // Try iOS HapticFeedback if available
+          try {
+            const { HapticFeedback } = require("react-native");
+            HapticFeedback.impactAsync(
+              intensity === "light"
+                ? "light"
+                : intensity === "medium"
+                ? "medium"
+                : "heavy"
+            );
+            return;
+          } catch {
+            // Don't use vibration fallback on iOS - it's too strong
+            // Better to have no feedback than jarring vibration
+          }
+        }
+      } else if (Platform.OS === "android") {
+        // Try React Native Haptic Feedback library (preferred for Android)
+        try {
+          const ReactNativeHapticFeedback = require("react-native-haptic-feedback");
+          const options = {
+            enableVibrateFallback: false, // Don't fallback to vibration
+            ignoreAndroidSystemSettings: false,
+          };
+
+          const feedbackType =
+            intensity === "light"
+              ? "impactLight"
+              : intensity === "medium"
+              ? "impactMedium"
+              : "impactHeavy";
+
+          ReactNativeHapticFeedback.trigger(feedbackType, options);
+          return;
+        } catch {
+          // Try Android system haptic feedback
+          try {
+            const { HapticFeedback } = require("react-native");
+            HapticFeedback.trigger("clockTick"); // More subtle than contextClick
+            return;
+          } catch {
+            // Minimal vibration as absolute last resort (1ms for light)
+            Vibration.vibrate(intensity === "light" ? 1 : intensity === "medium" ? 2 : 3);
+          }
+        }
+      }
+    } catch (error) {
+      // Silently fail if haptics not available
+    }
+  };
 
   useEffect(() => {
     if (open) {
@@ -581,6 +593,27 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
     }
   }, [open, animationSpeed]);
 
+  // Auto-scroll to selected year when in year view
+  useEffect(() => {
+    if (viewMode === "years" && yearListRef.current && selected) {
+      const currentYear = selected.getFullYear();
+      // Generate same year range as renderYears
+      const years: number[] = [];
+      for (let y = currentYear - 60; y <= currentYear + 60; y++) years.push(y);
+
+      const selectedYearIndex = years.findIndex((y) => y === currentYear);
+      if (selectedYearIndex >= 0) {
+        setTimeout(() => {
+          yearListRef.current?.scrollToIndex({
+            index: selectedYearIndex,
+            animated: false,
+            viewPosition: 0.5,
+          });
+        }, 50);
+      }
+    }
+  }, [viewMode, selected]);
+
   const monthNames = useMemo(() => {
     const fmt = new Intl.DateTimeFormat(locale || undefined, { month: "long" });
     return Array.from({ length: 12 }, (_, m) =>
@@ -609,28 +642,121 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
   const handleSelect = (d: Date) => {
     if (!between(d, effectiveMin, effectiveMax)) return;
-    setSelected(d);
-    onChange?.(d);
-    onClose();
+    let finalDate = new Date(d);
+
+    // If we're in datetime mode or time mode, preserve/apply time
+    if (mode === "datetime" || mode === "time") {
+      finalDate.setHours(selectedHour);
+      finalDate.setMinutes(selectedMinute);
+    }
+
+    setSelected(finalDate);
+
+    // For date mode, close immediately. For datetime, go to time picker first
+    if (mode === "date") {
+      onChange?.(finalDate);
+      onClose();
+    } else if (mode === "datetime" && viewMode === "days") {
+      setViewMode("time");
+    } else {
+      onChange?.(finalDate);
+      onClose();
+    }
+  };
+
+  const handleTimeChange = (hour: number, minute: number) => {
+    setSelectedHour(hour);
+    setSelectedMinute(minute);
+
+    let finalDate = new Date(selected);
+    finalDate.setHours(hour);
+    finalDate.setMinutes(minute);
+
+    setSelected(finalDate);
+    onChange?.(finalDate);
+
+    // Don't auto-close on individual time changes
+    // Only close when user explicitly taps "Done" or outside
   };
   const goPrev = () =>
     setCursor(
-      mode === "days"
+      viewMode === "days"
         ? addMonths(cursor, -1)
-        : mode === "months"
+        : viewMode === "months"
         ? addYears(cursor, -1)
         : addYears(cursor, -12)
     );
   const goNext = () =>
     setCursor(
-      mode === "days"
+      viewMode === "days"
         ? addMonths(cursor, 1)
-        : mode === "months"
+        : viewMode === "months"
         ? addYears(cursor, 1)
         : addYears(cursor, 12)
     );
 
   const renderHeader = () => {
+    if (viewMode === "time") {
+      return (
+        <View
+          style={[
+            styles.header,
+            {
+              paddingHorizontal: THEME.space.md,
+              paddingTop: THEME.space.sm,
+              backgroundColor: THEME.colors.header,
+            },
+          ]}
+        >
+          <View style={styles.timeHeader}>
+            {mode === "datetime" && (
+              <TouchableOpacity
+                onPress={() => setViewMode("days")}
+                accessibilityRole="button"
+                accessibilityLabel="Back to date"
+                style={styles.backButton}
+              >
+                <Text style={[styles.chev, { color: THEME.colors.foreground }]}>
+                  ‹
+                </Text>
+              </TouchableOpacity>
+            )}
+            <Text
+              style={[
+                styles.monthText,
+                {
+                  color: THEME.colors.foreground,
+                  fontSize: THEME.fontSizes.lg,
+                  textAlign: "center",
+                  flex: 1,
+                },
+              ]}
+            >
+              Select Time
+            </Text>
+            {(mode === "datetime" || mode === "time") && (
+              <TouchableOpacity
+                onPress={() => {
+                  const finalDate = new Date(selected);
+                  finalDate.setHours(selectedHour);
+                  finalDate.setMinutes(selectedMinute);
+                  onChange?.(finalDate);
+                  onClose();
+                }}
+                accessibilityRole="button"
+                accessibilityLabel="Done"
+                style={styles.doneButton}
+              >
+                <Text style={[styles.doneText, { color: THEME.colors.accent }]}>
+                  Done
+                </Text>
+              </TouchableOpacity>
+            )}
+          </View>
+        </View>
+      );
+    }
+
     const year = cursor.getFullYear();
     const month = cursor.getMonth();
     const monthLabel = monthNames[month];
@@ -646,7 +772,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
         ]}
       >
         <TouchableOpacity
-          onPress={() => setMode("years")}
+          onPress={() => setViewMode("years")}
           accessibilityRole="button"
           accessibilityLabel="Select year"
         >
@@ -673,7 +799,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             </Text>
           </TouchableOpacity>
           <TouchableOpacity
-            onPress={() => setMode(mode === "days" ? "months" : "days")}
+            onPress={() => setViewMode(viewMode === "days" ? "months" : "days")}
             accessibilityRole="button"
             accessibilityLabel="Select month"
             style={styles.headerCenter}
@@ -700,6 +826,22 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             </Text>
           </TouchableOpacity>
         </View>
+        {mode === "datetime" && viewMode === "days" && (
+          <TouchableOpacity
+            onPress={() => setViewMode("time")}
+            style={styles.timeToggle}
+            accessibilityRole="button"
+            accessibilityLabel="Select time"
+          >
+            <Text
+              style={[styles.timeToggleText, { color: THEME.colors.accent }]}
+            >
+              {String(selectedHour).padStart(2, "0")}:
+              {String(selectedMinute).padStart(2, "0")}
+              {!is24Hour && (selectedHour >= 12 ? " PM" : " AM")}
+            </Text>
+          </TouchableOpacity>
+        )}
       </View>
     );
   };
@@ -798,7 +940,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
                 disabled={!selectable}
                 onPress={() => {
                   setCursor(new Date(cursor.getFullYear(), m.idx, 1));
-                  setMode("days");
+                  setViewMode("days");
                 }}
                 accessibilityRole="button"
                 accessibilityLabel={`Open ${m.name}`}
@@ -833,9 +975,14 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   };
 
   const renderYears = () => {
-    const baseYear = cursor.getFullYear();
+    const currentYear = (selected as Date).getFullYear();
     const years: number[] = [];
-    for (let y = baseYear - 120; y <= baseYear + 120; y++) years.push(y);
+    // Center the year range around the selected year instead of cursor year
+    for (let y = currentYear - 60; y <= currentYear + 60; y++) years.push(y);
+
+    const selectedYearIndex = years.findIndex((y) => y === currentYear);
+    const scrollIndex = selectedYearIndex !== -1 ? selectedYearIndex : 60;
+
     const item = ({ item: y }: { item: number }) => {
       const inRange =
         between(new Date(y, 0, 1), effectiveMin, effectiveMax) ||
@@ -845,8 +992,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
         <TouchableOpacity
           disabled={!inRange}
           onPress={() => {
+            triggerHaptic("medium");
             setCursor(new Date(y, cursor.getMonth(), 1));
-            setMode("months");
+            setViewMode("months");
           }}
           style={[
             styles.yearRow,
@@ -873,12 +1021,13 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
         </TouchableOpacity>
       );
     };
+
     return (
-      <View style={{ maxHeight: 320 }}>
+      <View style={{ maxHeight: 320, paddingVertical: 20 }}>
         <FlatList
+          ref={yearListRef}
           data={years}
           keyExtractor={(y: number) => String(y)}
-          initialScrollIndex={120}
           getItemLayout={(_, index: number) => ({
             length: 44,
             offset: 44 * index,
@@ -886,7 +1035,382 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           })}
           renderItem={item}
           showsVerticalScrollIndicator={false}
+          contentContainerStyle={{ paddingVertical: 20 }}
+          onScrollToIndexFailed={(info) => {
+            // Handle scroll failure gracefully
+            const safeIndex = Math.min(
+              Math.max(0, info.index),
+              years.length - 1
+            );
+            setTimeout(() => {
+              yearListRef.current?.scrollToIndex({
+                index: safeIndex,
+                animated: false,
+                viewPosition: 0.5,
+              });
+            }, 50);
+          }}
         />
+      </View>
+    );
+  };
+
+  const renderTimePicker = () => {
+    // Helper to check if a time is within min/max constraints
+    const isTimeValid = (hour: number, minute: number) => {
+      if (!minTime && !maxTime) return true;
+
+      const timeInMinutes = hour * 60 + minute;
+
+      if (minTime) {
+        const minInMinutes = minTime.hour * 60 + minTime.minute;
+        if (timeInMinutes < minInMinutes) return false;
+      }
+
+      if (maxTime) {
+        const maxInMinutes = maxTime.hour * 60 + maxTime.minute;
+        if (timeInMinutes > maxInMinutes) return false;
+      }
+
+      return true;
+    };
+
+    const hours = is24Hour
+      ? Array.from({ length: 24 }, (_, i) => i)
+      : Array.from({ length: 12 }, (_, i) => (i === 0 ? 12 : i));
+
+    const minutes = Array.from(
+      { length: 60 / minuteInterval },
+      (_, i) => i * minuteInterval
+    );
+
+    const ITEM_HEIGHT = 60;
+
+    // Calculate initial scroll positions
+    const getHourScrollIndex = () => {
+      if (is24Hour) {
+        return selectedHour;
+      } else {
+        const displayHour =
+          selectedHour === 0
+            ? 12
+            : selectedHour > 12
+            ? selectedHour - 12
+            : selectedHour;
+        return hours.findIndex((h) => h === displayHour);
+      }
+    };
+
+    const getMinuteScrollIndex = () => {
+      return minutes.findIndex((m) => m === selectedMinute);
+    };
+
+    // Handle scroll-based selection for hours
+    const handleHourScroll = (event: any) => {
+      const { contentOffset } = event.nativeEvent;
+      const index = Math.round(contentOffset.y / ITEM_HEIGHT);
+      const clampedIndex = Math.max(0, Math.min(index, hours.length - 1));
+      const selectedHourValue = hours[clampedIndex];
+
+      let actualHour;
+      if (is24Hour) {
+        actualHour = selectedHourValue;
+      } else {
+        // Convert 12-hour display to 24-hour for internal state
+        // Auto-switch AM/PM based on current period
+        const currentlyPM = selectedHour >= 12;
+        if (selectedHourValue === 12) {
+          actualHour = currentlyPM ? 12 : 0;
+        } else {
+          actualHour = currentlyPM ? selectedHourValue + 12 : selectedHourValue;
+        }
+      }
+
+      // Check if time is valid before updating
+      if (!isTimeValid(actualHour, selectedMinute)) {
+        return;
+      }
+
+      // Only update if the value actually changed
+      if (actualHour !== selectedHour) {
+        // Trigger subtle haptic on every item change
+        if (actualHour !== lastHapticHourRef.current) {
+          lastHapticHourRef.current = actualHour;
+          triggerHaptic("light");
+        }
+
+        // Mark as scrolling
+        isScrollingRef.current = true;
+
+        // Clear previous timeout
+        if (scrollTimeoutRef.current) {
+          clearTimeout(scrollTimeoutRef.current);
+        }
+
+        // Update state only after scroll settles (debounced)
+        scrollTimeoutRef.current = setTimeout(() => {
+          isScrollingRef.current = false;
+          setSelectedHour(actualHour);
+          setSelected((prev) => {
+            const newDate = new Date(prev);
+            newDate.setHours(actualHour);
+            return newDate;
+          });
+
+          // Auto-scroll AM/PM picker to match the hour change
+          if (!is24Hour && ampmScrollRef.current) {
+            const newPeriodIndex = actualHour >= 12 ? 1 : 0;
+            ampmScrollRef.current?.scrollToIndex({
+              index: newPeriodIndex,
+              animated: true,
+              viewPosition: 0.5,
+            });
+          }
+        }, 100);
+      }
+    };
+
+    // Handle scroll-based selection for minutes
+    const handleMinuteScroll = (event: any) => {
+      const { contentOffset } = event.nativeEvent;
+      const index = Math.round(contentOffset.y / ITEM_HEIGHT);
+      const clampedIndex = Math.max(0, Math.min(index, minutes.length - 1));
+      const selectedMinuteValue = minutes[clampedIndex];
+
+      // Check if time is valid before updating
+      if (!isTimeValid(selectedHour, selectedMinuteValue)) {
+        return;
+      }
+
+      // Only update if the value actually changed
+      if (selectedMinuteValue !== selectedMinute) {
+        // Trigger subtle haptic on every item change
+        if (selectedMinuteValue !== lastHapticMinuteRef.current) {
+          lastHapticMinuteRef.current = selectedMinuteValue;
+          triggerHaptic("light");
+        }
+
+        // Mark as scrolling
+        isScrollingRef.current = true;
+
+        // Clear previous timeout
+        if (scrollTimeoutRef.current) {
+          clearTimeout(scrollTimeoutRef.current);
+        }
+
+        // Update state only after scroll settles (debounced)
+        scrollTimeoutRef.current = setTimeout(() => {
+          isScrollingRef.current = false;
+          setSelectedMinute(selectedMinuteValue);
+          setSelected((prev) => {
+            const newDate = new Date(prev);
+            newDate.setMinutes(selectedMinuteValue);
+            return newDate;
+          });
+        }, 100);
+      }
+    };
+
+    const renderTimeItem = (
+      value: number,
+      isSelected: boolean,
+      isDisabled: boolean
+    ) => {
+      return (
+        <View style={[styles.timeItem, { height: ITEM_HEIGHT }]}>
+          <Text
+            style={{
+              color: isDisabled
+                ? THEME.colors.disabledForeground
+                : isSelected
+                ? THEME.colors.foreground
+                : THEME.colors.mutedForeground,
+              fontSize: isSelected ? 32 : 20,
+              fontWeight: isSelected ? "700" : "400",
+              opacity: isDisabled ? 0.2 : isSelected ? 1 : 0.4,
+              textDecorationLine: isDisabled ? "line-through" : "none",
+            }}
+          >
+            {String(value).padStart(2, "0")}
+          </Text>
+        </View>
+      );
+    };
+
+    const hourItems = ({
+      item: hour,
+      index,
+    }: {
+      item: number;
+      index: number;
+    }) => {
+      const currentIndex = getHourScrollIndex();
+      const actualHour = is24Hour
+        ? hour
+        : hour === 12
+        ? selectedHour >= 12
+          ? 12
+          : 0
+        : selectedHour >= 12
+        ? hour + 12
+        : hour;
+      const isDisabled = !isTimeValid(actualHour, selectedMinute);
+      return renderTimeItem(hour, index === currentIndex, isDisabled);
+    };
+
+    const minuteItems = ({
+      item: minute,
+      index,
+    }: {
+      item: number;
+      index: number;
+    }) => {
+      const currentIndex = getMinuteScrollIndex();
+      const isDisabled = !isTimeValid(selectedHour, minute);
+      return renderTimeItem(minute, index === currentIndex, isDisabled);
+    };
+
+    // Handle AM/PM scroll
+    const handleAmPmScroll = (event: any) => {
+      const { contentOffset } = event.nativeEvent;
+      const index = Math.round(contentOffset.y / ITEM_HEIGHT);
+      const isPM = index === 1;
+
+      const newHour = isPM
+        ? selectedHour < 12 ? selectedHour + 12 : selectedHour
+        : selectedHour >= 12 ? selectedHour - 12 : selectedHour;
+
+      if (newHour !== selectedHour) {
+        setSelectedHour(newHour);
+        setSelected((prev) => {
+          const newDate = new Date(prev);
+          newDate.setHours(newHour);
+          return newDate;
+        });
+        triggerHaptic("light");
+      }
+    };
+
+    const ampmData = ["AM", "PM"];
+    const renderAmPmItem = ({ item, index }: { item: string; index: number }) => {
+      const isSelected = (selectedHour < 12 && index === 0) || (selectedHour >= 12 && index === 1);
+      return (
+        <View style={[styles.timeItem, { height: ITEM_HEIGHT }]}>
+          <Text
+            style={{
+              color: isSelected ? THEME.colors.foreground : THEME.colors.mutedForeground,
+              fontSize: isSelected ? 24 : 16,
+              fontWeight: isSelected ? "700" : "400",
+              opacity: isSelected ? 1 : 0.4,
+            }}
+          >
+            {item}
+          </Text>
+        </View>
+      );
+    };
+
+    return (
+      <View style={styles.timePickerContainer}>
+        {/* Subtle background highlight for selected item area */}
+        <View style={styles.timeSelectionIndicator} pointerEvents="none">
+          <View
+            style={[
+              styles.selectionBox,
+              {
+                backgroundColor: withAlpha(THEME.colors.accent, 0.05),
+                borderRadius: ITEM_HEIGHT / 2,
+                height: ITEM_HEIGHT,
+              },
+            ]}
+          />
+        </View>
+
+        <View style={styles.timeColumn}>
+          <FlatList
+            ref={hourScrollRef}
+            data={hours}
+            keyExtractor={(hour) => String(hour)}
+            renderItem={hourItems}
+            showsVerticalScrollIndicator={false}
+            getItemLayout={(_, index) => ({
+              length: ITEM_HEIGHT,
+              offset: ITEM_HEIGHT * index,
+              index,
+            })}
+            style={styles.timeList}
+            snapToInterval={ITEM_HEIGHT}
+            snapToAlignment="center"
+            decelerationRate="fast"
+            onScroll={handleHourScroll}
+            scrollEventThrottle={16}
+            contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
+            initialScrollIndex={getHourScrollIndex()}
+            removeClippedSubviews={false}
+          />
+        </View>
+
+        <View style={styles.timeSeparator}>
+          <Text
+            style={[
+              styles.timeSeparatorText,
+              { color: THEME.colors.foreground },
+            ]}
+          >
+            :
+          </Text>
+        </View>
+
+        <View style={styles.timeColumn}>
+          <FlatList
+            ref={minuteScrollRef}
+            data={minutes}
+            keyExtractor={(minute) => String(minute)}
+            renderItem={minuteItems}
+            showsVerticalScrollIndicator={false}
+            getItemLayout={(_, index) => ({
+              length: ITEM_HEIGHT,
+              offset: ITEM_HEIGHT * index,
+              index,
+            })}
+            style={styles.timeList}
+            snapToInterval={ITEM_HEIGHT}
+            snapToAlignment="center"
+            decelerationRate="fast"
+            onScroll={handleMinuteScroll}
+            scrollEventThrottle={16}
+            contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
+            initialScrollIndex={getMinuteScrollIndex()}
+            removeClippedSubviews={false}
+          />
+        </View>
+
+        {/* AM/PM scroll wheel on the right */}
+        {!is24Hour && (
+          <View style={styles.ampmColumn}>
+            <FlatList
+              ref={ampmScrollRef}
+              data={ampmData}
+              keyExtractor={(item) => item}
+              renderItem={renderAmPmItem}
+              showsVerticalScrollIndicator={false}
+              getItemLayout={(_, index) => ({
+                length: ITEM_HEIGHT,
+                offset: ITEM_HEIGHT * index,
+                index,
+              })}
+              style={styles.ampmList}
+              snapToInterval={ITEM_HEIGHT}
+              snapToAlignment="center"
+              decelerationRate="fast"
+              onScroll={handleAmPmScroll}
+              scrollEventThrottle={16}
+              contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
+              initialScrollIndex={selectedHour < 12 ? 0 : 1}
+              removeClippedSubviews={false}
+            />
+          </View>
+        )}
       </View>
     );
   };
@@ -934,9 +1458,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           style={[styles.divider, { backgroundColor: THEME.colors.divider }]}
         />
         <View style={{ backgroundColor: THEME.colors.surface, height: 360 }}>
-          {mode === "days" && renderDays()}
-          {mode === "months" && renderMonths()}
-          {mode === "years" && (
+          {viewMode === "days" && renderDays()}
+          {viewMode === "months" && renderMonths()}
+          {viewMode === "years" && (
             <View
               style={{
                 paddingHorizontal: THEME.space.md,
@@ -945,6 +1469,17 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
               }}
             >
               {renderYears()}
+            </View>
+          )}
+          {viewMode === "time" && (
+            <View
+              style={{
+                paddingHorizontal: THEME.space.md,
+                paddingBottom: THEME.space.md,
+                flex: 1,
+              }}
+            >
+              {renderTimePicker()}
             </View>
           )}
         </View>
@@ -1007,6 +1542,115 @@ const styles = StyleSheet.create({
     alignItems: "center",
     borderRadius: 10,
     marginVertical: 2,
+  },
+  // Time picker styles
+  timeHeader: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "space-between",
+    paddingVertical: 8,
+  },
+  backButton: {
+    paddingHorizontal: 8,
+    paddingVertical: 4,
+  },
+  doneButton: {
+    paddingHorizontal: 12,
+    paddingVertical: 6,
+  },
+  doneText: {
+    fontSize: 16,
+    fontWeight: "600",
+  },
+  timeToggle: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+  timeToggleText: {
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  timePickerContainer: {
+    flexDirection: "row",
+    alignItems: "center",
+    justifyContent: "center",
+    paddingHorizontal: 24,
+    height: 300,
+    position: "relative",
+  },
+  timeColumn: {
+    flex: 1,
+    alignItems: "center",
+    justifyContent: "center",
+  },
+  timeLabel: {
+    fontSize: 14,
+    fontWeight: "500",
+    marginBottom: 8,
+  },
+  timeList: {
+    height: 300,
+    flex: 1,
+  },
+  timeItem: {
+    justifyContent: "center",
+    alignItems: "center",
+  },
+  timeSeparator: {
+    justifyContent: "center",
+    alignItems: "center",
+    width: 40,
+    marginHorizontal: 8,
+  },
+  timeSeparatorText: {
+    fontSize: 36,
+    fontWeight: "200",
+  },
+  ampmColumn: {
+    width: 60,
+    alignItems: "center",
+    justifyContent: "center",
+    marginLeft: 8,
+    marginRight: 16,
+  },
+  ampmList: {
+    height: 300,
+    width: 60,
+  },
+  ampmContainer: {
+    height: 300,
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 12,
+  },
+  ampmContainerBottom: {
+    flexDirection: "row",
+    justifyContent: "center",
+    alignItems: "center",
+    gap: 16,
+    paddingHorizontal: 24,
+    paddingVertical: 16,
+    paddingBottom: 8,
+  },
+  ampmButton: {
+    paddingVertical: 12,
+    paddingHorizontal: 32,
+    minWidth: 100,
+    alignItems: "center",
+  },
+  timeSelectionIndicator: {
+    position: "absolute",
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    justifyContent: "center",
+    alignItems: "center",
+    zIndex: 0,
+    pointerEvents: "none",
+  },
+  selectionBox: {
+    width: "80%",
   },
 });
 

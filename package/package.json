@@ -1,7 +1,7 @@
 {
   "name": "@anasyd/react-native-modern-date-picker",
   "version": "1.1.1",
-  "description": "A modern, customizable date picker for React Native & Expo (optional blur via expo-blur or @react-native-community/blur)",
+  "description": "A modern, customizable date picker for React Native & Expo with haptic feedback support (optional blur via expo-blur or @react-native-community/blur)",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/anasyd/react-native-modern-date-picker.git",
@@ -23,8 +23,8 @@
     "prepublishOnly": "npm run build"
   },
   "peerDependencies": {
-    "react": ">=19.0.0",
-    "react-native": ">=0.81.0"
+    "react": ">=18.0.0",
+    "react-native": ">=0.65.0"
   },
   "devDependencies": {
     "@types/react": "^19.1.13",
@@ -39,6 +39,9 @@
     "react-native",
     "date-picker",
     "calendar",
+    "time-picker",
+    "datetime-picker",
+    "haptic-feedback",
     "bottom-sheet",
     "blur",
     "ios",
