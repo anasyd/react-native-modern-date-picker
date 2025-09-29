@@ -106,7 +106,7 @@ function App() {
           preset: "light",
           palette: {
             primary: "#ffffff",
-            secondary: "#000000",
+            secondary: "#ff0000ff",
             accent: "#2563eb",
           },
         }}
@@ -125,9 +125,9 @@ function App() {
         theme={{
           preset: "light",
           palette: {
-            primary: "#ffffff",
-            secondary: "#000000",
-            accent: "#10b981",
+            primary: "#3cff01ff",
+            secondary: "#ff0000ff",
+            accent: "#073828ff",
           },
         }}
       />
@@ -188,7 +188,7 @@ function App() {
           preset: "light",
           palette: {
             primary: "#ffffff",
-            secondary: "#000000",
+            secondary: "#8228acff",
             accent: "#ef4444",
           },
         }}

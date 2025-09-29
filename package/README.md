@@ -217,6 +217,16 @@ Useful for quick demos or if you don't want a provider.
 />
 ```
 
+### Palette to Semantic Token Mapping
+
+When you define a theme with `createTheme({ preset, palette })`, the palette colors map to semantic tokens:
+
+| Palette Property | Maps To Semantic Token | Purpose                              |
+| ---------------- | ---------------------- | ------------------------------------ |
+| `primary`        | `background`, `surface`, `header` | Surfaces and backgrounds  |
+| `secondary`      | `foreground`, `mutedForeground` | Text and icon colors         |
+| `accent`         | `accent`, `onAccent`   | Selection highlights and their text  |
+
 ### Semantic color tokens
 
 | Token                | Purpose                        |

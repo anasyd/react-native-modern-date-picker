@@ -341,6 +341,8 @@ export type ModernDatePickerProps = {
   mode?: "date" | "time" | "datetime";
   is24Hour?: boolean;
   minuteInterval?: 1 | 2 | 3 | 4 | 5 | 6 | 10 | 12 | 15 | 20 | 30;
+  // Haptic feedback
+  haptics?: boolean; // Enable/disable haptic feedback (default: true)
   // Theming: you can pass a resolved Theme or a CreateThemeInput
   theme?: Theme | CreateThemeInput;
   locale?: string;
@@ -374,6 +376,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   mode = "date",
   is24Hour = true,
   minuteInterval = 1,
+  haptics = true,
   theme,
   locale = Platform.OS === "ios" ? undefined : "en-US",
   firstDayOfWeek = 0,
@@ -466,10 +469,6 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   const lastHapticHourRef = useRef<number>(initialSelected.getHours());
   const lastHapticMinuteRef = useRef<number>(initialSelected.getMinutes());
 
-  // Track if user is actively scrolling to prevent state updates during scroll
-  const isScrollingRef = useRef<boolean>(false);
-  const scrollTimeoutRef = useRef<NodeJS.Timeout | null>(null);
-
   const translateY = useRef(new Animated.Value(300)).current;
   const opacity = useRef(new Animated.Value(0)).current;
   const backdropOpacity = useRef(new Animated.Value(0)).current;
@@ -481,44 +480,47 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   const minuteScrollRef = useRef<FlatList>(null);
   const ampmScrollRef = useRef<FlatList>(null);
 
-  // Improved haptic feedback utility - subtle iOS-style feedback
+  // Improved haptic feedback utility
   const triggerHaptic = (intensity: "light" | "medium" | "heavy" = "light") => {
+    if (!haptics) return; // Skip if haptics disabled
+
     try {
+      // Try Expo Haptics first (works for both Expo and bare RN if installed)
+      try {
+        const ExpoHaptics = require("expo-haptics");
+        const impactStyle =
+          intensity === "light"
+            ? ExpoHaptics.ImpactFeedbackStyle.Light
+            : intensity === "medium"
+            ? ExpoHaptics.ImpactFeedbackStyle.Medium
+            : ExpoHaptics.ImpactFeedbackStyle.Heavy;
+        ExpoHaptics.impactAsync(impactStyle);
+        return;
+      } catch {
+        // Expo Haptics not available, try other methods
+      }
+
       if (Platform.OS === "ios") {
-        // Try to use Expo haptics first (preferred)
+        // Try iOS HapticFeedback if available
         try {
-          const { Haptics } = require("expo-haptics");
-          const feedbackStyle =
+          const { HapticFeedback } = require("react-native");
+          HapticFeedback.impactAsync(
             intensity === "light"
-              ? Haptics.ImpactFeedbackStyle.Light
+              ? "light"
               : intensity === "medium"
-              ? Haptics.ImpactFeedbackStyle.Medium
-              : Haptics.ImpactFeedbackStyle.Heavy;
-          Haptics.impactAsync(feedbackStyle);
+              ? "medium"
+              : "heavy"
+          );
           return;
         } catch {
-          // Try iOS HapticFeedback if available
-          try {
-            const { HapticFeedback } = require("react-native");
-            HapticFeedback.impactAsync(
-              intensity === "light"
-                ? "light"
-                : intensity === "medium"
-                ? "medium"
-                : "heavy"
-            );
-            return;
-          } catch {
-            // Don't use vibration fallback on iOS - it's too strong
-            // Better to have no feedback than jarring vibration
-          }
+          // Don't fallback to vibration on iOS
         }
       } else if (Platform.OS === "android") {
         // Try React Native Haptic Feedback library (preferred for Android)
         try {
           const ReactNativeHapticFeedback = require("react-native-haptic-feedback");
           const options = {
-            enableVibrateFallback: false, // Don't fallback to vibration
+            enableVibrateFallback: true,
             ignoreAndroidSystemSettings: false,
           };
 
@@ -532,15 +534,8 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           ReactNativeHapticFeedback.trigger(feedbackType, options);
           return;
         } catch {
-          // Try Android system haptic feedback
-          try {
-            const { HapticFeedback } = require("react-native");
-            HapticFeedback.trigger("clockTick"); // More subtle than contextClick
-            return;
-          } catch {
-            // Minimal vibration as absolute last resort (1ms for light)
-            Vibration.vibrate(intensity === "light" ? 1 : intensity === "medium" ? 2 : 3);
-          }
+          // Fallback to vibration for bare React Native on Android
+          Vibration.vibrate(intensity === "light" ? 1 : intensity === "medium" ? 2 : 3);
         }
       }
     } catch (error) {
@@ -1077,7 +1072,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
     const hours = is24Hour
       ? Array.from({ length: 24 }, (_, i) => i)
-      : Array.from({ length: 12 }, (_, i) => (i === 0 ? 12 : i));
+      : Array.from({ length: 12 }, (_, i) => i + 1); // [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]
 
     const minutes = Array.from(
       { length: 60 / minuteInterval },
@@ -1091,13 +1086,11 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       if (is24Hour) {
         return selectedHour;
       } else {
-        const displayHour =
-          selectedHour === 0
-            ? 12
-            : selectedHour > 12
-            ? selectedHour - 12
-            : selectedHour;
-        return hours.findIndex((h) => h === displayHour);
+        // Convert 24-hour to 12-hour display (0->12, 13->1, etc.)
+        let displayHour = selectedHour % 12;
+        if (displayHour === 0) displayHour = 12;
+        // hours array is [1, 2, 3, ..., 12], so index is displayHour - 1
+        return displayHour - 1;
       }
     };
 
@@ -1110,18 +1103,20 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
       const { contentOffset } = event.nativeEvent;
       const index = Math.round(contentOffset.y / ITEM_HEIGHT);
       const clampedIndex = Math.max(0, Math.min(index, hours.length - 1));
-      const selectedHourValue = hours[clampedIndex];
+      const selectedHourValue = hours[clampedIndex]; // 1-12 or 0-23
 
       let actualHour;
       if (is24Hour) {
         actualHour = selectedHourValue;
       } else {
-        // Convert 12-hour display to 24-hour for internal state
-        // Auto-switch AM/PM based on current period
+        // Convert 12-hour display to 24-hour based on current AM/PM period
+        // selectedHourValue is 1-12
         const currentlyPM = selectedHour >= 12;
         if (selectedHourValue === 12) {
+          // 12 AM = 0, 12 PM = 12
           actualHour = currentlyPM ? 12 : 0;
         } else {
+          // 1-11 AM = 1-11, 1-11 PM = 13-23
           actualHour = currentlyPM ? selectedHourValue + 12 : selectedHourValue;
         }
       }
@@ -1139,34 +1134,13 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           triggerHaptic("light");
         }
 
-        // Mark as scrolling
-        isScrollingRef.current = true;
-
-        // Clear previous timeout
-        if (scrollTimeoutRef.current) {
-          clearTimeout(scrollTimeoutRef.current);
-        }
-
-        // Update state only after scroll settles (debounced)
-        scrollTimeoutRef.current = setTimeout(() => {
-          isScrollingRef.current = false;
-          setSelectedHour(actualHour);
-          setSelected((prev) => {
-            const newDate = new Date(prev);
-            newDate.setHours(actualHour);
-            return newDate;
-          });
-
-          // Auto-scroll AM/PM picker to match the hour change
-          if (!is24Hour && ampmScrollRef.current) {
-            const newPeriodIndex = actualHour >= 12 ? 1 : 0;
-            ampmScrollRef.current?.scrollToIndex({
-              index: newPeriodIndex,
-              animated: true,
-              viewPosition: 0.5,
-            });
-          }
-        }, 100);
+        // Update immediately without debouncing
+        setSelectedHour(actualHour);
+        setSelected((prev) => {
+          const newDate = new Date(prev);
+          newDate.setHours(actualHour);
+          return newDate;
+        });
       }
     };
 
@@ -1190,24 +1164,13 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
           triggerHaptic("light");
         }
 
-        // Mark as scrolling
-        isScrollingRef.current = true;
-
-        // Clear previous timeout
-        if (scrollTimeoutRef.current) {
-          clearTimeout(scrollTimeoutRef.current);
-        }
-
-        // Update state only after scroll settles (debounced)
-        scrollTimeoutRef.current = setTimeout(() => {
-          isScrollingRef.current = false;
-          setSelectedMinute(selectedMinuteValue);
-          setSelected((prev) => {
-            const newDate = new Date(prev);
-            newDate.setMinutes(selectedMinuteValue);
-            return newDate;
-          });
-        }, 100);
+        // Update immediately without debouncing
+        setSelectedMinute(selectedMinuteValue);
+        setSelected((prev) => {
+          const newDate = new Date(prev);
+          newDate.setMinutes(selectedMinuteValue);
+          return newDate;
+        });
       }
     };
 
@@ -1347,6 +1310,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
             initialScrollIndex={getHourScrollIndex()}
             removeClippedSubviews={false}
+            nestedScrollEnabled={true}
           />
         </View>
 
@@ -1382,6 +1346,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
             initialScrollIndex={getMinuteScrollIndex()}
             removeClippedSubviews={false}
+            nestedScrollEnabled={true}
           />
         </View>
 
@@ -1408,6 +1373,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
               contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
               initialScrollIndex={selectedHour < 12 ? 0 : 1}
               removeClippedSubviews={false}
+              nestedScrollEnabled={true}
             />
           </View>
         )}
