@@ -129,6 +129,7 @@ function App() {
             secondary: "#ff0000ff",
             accent: "#073828ff",
           },
+          options: { autoContrast: false },
         }}
       />
 
