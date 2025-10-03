@@ -329,6 +329,10 @@ export type ModernDatePickerProps = {
   value?: Date | null;
   defaultValue?: Date;
   onChange?: (date: Date) => void;
+  // Range selection
+  range?: boolean;
+  rangeValue?: { start: Date | null; end: Date | null };
+  onRangeChange?: (range: { start: Date | null; end: Date | null }) => void;
   // Date constraints
   minDate?: Date;
   maxDate?: Date;
@@ -367,6 +371,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
   value,
   defaultValue,
   onChange,
+  range,
+  rangeValue,
+  onRangeChange,
   minDate,
   maxDate,
   minAge,
@@ -441,6 +448,9 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
   const [selected, setSelected] = useState<Date>(initialSelected);
   useEffect(() => setSelected(initialSelected), [open]);
+
+  const [startDate, setStartDate] = useState<Date | null>(rangeValue?.start ?? null);
+  const [endDate, setEndDate] = useState<Date | null>(rangeValue?.end ?? null);
 
   const [cursor, setCursor] = useState<Date>(
     new Date(initialSelected.getFullYear(), initialSelected.getMonth(), 1)
@@ -637,25 +647,43 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
   const handleSelect = (d: Date) => {
     if (!between(d, effectiveMin, effectiveMax)) return;
-    let finalDate = new Date(d);
 
-    // If we're in datetime mode or time mode, preserve/apply time
-    if (mode === "datetime" || mode === "time") {
-      finalDate.setHours(selectedHour);
-      finalDate.setMinutes(selectedMinute);
-    }
-
-    setSelected(finalDate);
-
-    // For date mode, close immediately. For datetime, go to time picker first
-    if (mode === "date") {
-      onChange?.(finalDate);
-      onClose();
-    } else if (mode === "datetime" && viewMode === "days") {
-      setViewMode("time");
+    if (range) {
+      if (!startDate || (startDate && endDate)) {
+        setStartDate(d);
+        setEndDate(null);
+        onRangeChange?.({ start: d, end: null });
+      } else if (startDate && !endDate) {
+        if (d > startDate) {
+          setEndDate(d);
+          onRangeChange?.({ start: startDate, end: d });
+          onClose();
+        } else {
+          setStartDate(d);
+          onRangeChange?.({ start: d, end: null });
+        }
+      }
     } else {
-      onChange?.(finalDate);
-      onClose();
+      let finalDate = new Date(d);
+
+      // If we're in datetime mode or time mode, preserve/apply time
+      if (mode === "datetime" || mode === "time") {
+        finalDate.setHours(selectedHour);
+        finalDate.setMinutes(selectedMinute);
+      }
+
+      setSelected(finalDate);
+
+      // For date mode, close immediately. For datetime, go to time picker first
+      if (mode === "date") {
+        onChange?.(finalDate);
+        onClose();
+      } else if (mode === "datetime" && viewMode === "days") {
+        setViewMode("time");
+      } else {
+        onChange?.(finalDate);
+        onClose();
+      }
     }
   };
 
@@ -672,6 +700,12 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
 
     // Don't auto-close on individual time changes
     // Only close when user explicitly taps "Done" or outside
+  };
+
+  const handleClearRange = () => {
+    setStartDate(null);
+    setEndDate(null);
+    onRangeChange?.({ start: null, end: null });
   };
   const goPrev = () =>
     setCursor(
@@ -821,6 +855,18 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             </Text>
           </TouchableOpacity>
         </View>
+        {range && (startDate || endDate) && (
+          <TouchableOpacity
+            onPress={handleClearRange}
+            style={styles.clearButton}
+            accessibilityRole="button"
+            accessibilityLabel="Clear range"
+          >
+            <Text style={[styles.clearButtonText, { color: THEME.colors.accent }]}>
+              Clear
+            </Text>
+          </TouchableOpacity>
+        )}
         {mode === "datetime" && viewMode === "days" && (
           <TouchableOpacity
             onPress={() => setViewMode("time")}
@@ -841,65 +887,79 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
     );
   };
 
-  const renderDays = () => (
-    <View
-      style={{
-        paddingHorizontal: THEME.space.md,
-        paddingBottom: THEME.space.md,
-      }}
-    >
-      <View style={styles.weekRow}>
-        {orderedWeekdays.map((w: string, i: number) => (
-          <Text
-            key={i}
-            style={[styles.weekLabel, { color: THEME.colors.mutedForeground }]}
-          >
-            {w}
-          </Text>
+  const renderDays = () => {
+    const isDateInRange = (date: Date) => {
+      if (!startDate || !endDate) return false;
+      const time = date.getTime();
+      return time > startDate.getTime() && time < endDate.getTime();
+    };
+
+    return (
+      <View
+        style={{
+          paddingHorizontal: THEME.space.md,
+          paddingBottom: THEME.space.md,
+        }}
+      >
+        <View style={styles.weekRow}>
+          {orderedWeekdays.map((w: string, i: number) => (
+            <Text
+              key={i}
+              style={[styles.weekLabel, { color: THEME.colors.mutedForeground }]}
+            >
+              {w}
+            </Text>
+          ))}
+        </View>
+        {matrix.map((row, r) => (
+          <View key={r} style={styles.weekRow}>
+            {row.map((cell, c) => {
+              const disabled =
+                !between(cell.date, effectiveMin, effectiveMax) || !cell.inMonth;
+              const isCurrent = !range && isSameDay(cell.date, selected as Date);
+              const isToday = isSameDay(cell.date, today);
+              const isStartDate = range && startDate && isSameDay(cell.date, startDate);
+              const isEndDate = range && endDate && isSameDay(cell.date, endDate);
+              const inRange = range && isDateInRange(cell.date);
+
+              const dayStyles: ViewStyle = {
+                borderRadius: THEME.radii.full,
+                borderWidth: isToday && !isCurrent ? 1 : 0,
+                borderColor: THEME.colors.accent,
+                backgroundColor: isCurrent || isStartDate || isEndDate ? THEME.colors.accent : inRange ? withAlpha(THEME.colors.accent, 0.2) : "transparent",
+              };
+              const txtStyles: TextStyle = {
+                color: isCurrent || isStartDate || isEndDate
+                  ? THEME.colors.onAccent
+                  : disabled
+                  ? THEME.colors.disabledForeground
+                  : inRange
+                  ? THEME.colors.accent
+                  : THEME.colors.foreground,
+                fontSize: THEME.fontSizes.md,
+              };
+              return (
+                <TouchableOpacity
+                  key={c}
+                  style={[styles.dayCell, { paddingVertical: 3 }]}
+                  disabled={disabled}
+                  onPress={() => handleSelect(stripTime(cell.date))}
+                  accessibilityRole="button"
+                  accessibilityLabel={`Select ${cell.date.toDateString()}`}
+                >
+                  <View style={[styles.dayPill, dayStyles]}>
+                    <Text style={[styles.dayText, txtStyles]}>
+                      {cell.date.getDate()}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            })}
+          </View>
         ))}
       </View>
-      {matrix.map((row, r) => (
-        <View key={r} style={styles.weekRow}>
-          {row.map((cell, c) => {
-            const disabled =
-              !between(cell.date, effectiveMin, effectiveMax) || !cell.inMonth;
-            const isCurrent = isSameDay(cell.date, selected as Date);
-            const isToday = isSameDay(cell.date, today);
-            const dayStyles: ViewStyle = {
-              borderRadius: THEME.radii.full,
-              borderWidth: isToday && !isCurrent ? 1 : 0,
-              borderColor: THEME.colors.accent,
-              backgroundColor: isCurrent ? THEME.colors.accent : "transparent",
-            };
-            const txtStyles: TextStyle = {
-              color: isCurrent
-                ? THEME.colors.onAccent
-                : disabled
-                ? THEME.colors.disabledForeground
-                : THEME.colors.foreground,
-              fontSize: THEME.fontSizes.md,
-            };
-            return (
-              <TouchableOpacity
-                key={c}
-                style={[styles.dayCell, { paddingVertical: 3 }]}
-                disabled={disabled}
-                onPress={() => handleSelect(stripTime(cell.date))}
-                accessibilityRole="button"
-                accessibilityLabel={`Select ${cell.date.toDateString()}`}
-              >
-                <View style={[styles.dayPill, dayStyles]}>
-                  <Text style={[styles.dayText, txtStyles]}>
-                    {cell.date.getDate()}
-                  </Text>
-                </View>
-              </TouchableOpacity>
-            );
-          })}
-        </View>
-      ))}
-    </View>
-  );
+    );
+  };
 
   const renderMonths = () => {
     const months = monthNames.map((name: string, idx: number) => ({
@@ -1306,6 +1366,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             snapToAlignment="center"
             decelerationRate="fast"
             onScroll={handleHourScroll}
+            onScrollEndDrag={handleHourScroll}
             scrollEventThrottle={16}
             contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
             initialScrollIndex={getHourScrollIndex()}
@@ -1342,6 +1403,7 @@ const ModernDatePicker: React.FC<ModernDatePickerProps> = ({
             snapToAlignment="center"
             decelerationRate="fast"
             onScroll={handleMinuteScroll}
+            onScrollEndDrag={handleMinuteScroll}
             scrollEventThrottle={16}
             contentContainerStyle={{ paddingVertical: ITEM_HEIGHT * 2 }}
             initialScrollIndex={getMinuteScrollIndex()}
@@ -1533,6 +1595,14 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
   },
   timeToggleText: {
+    fontSize: 16,
+    fontWeight: "500",
+  },
+  clearButton: {
+    alignItems: "center",
+    paddingVertical: 8,
+  },
+  clearButtonText: {
     fontSize: 16,
     fontWeight: "500",
   },
